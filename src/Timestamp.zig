@@ -124,6 +124,16 @@ pub fn compare(self: Timestamp, other: Timestamp) i8 {
     return 0;
 }
 
+pub fn format(value: Timestamp, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
+    _ = fmt;
+    _ = options;
+    try value.print(writer);
+}
+
+pub fn print(timestamp: Timestamp, writer: anytype) !void {
+    try writer.print("{d}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z", .{timestamp.year, timestamp.month, timestamp.day, timestamp.hour, timestamp.minute, timestamp.second});
+}
+
 fn setDate(timestamp: *Timestamp, year: []const u8, month: []const u8, day: []const u8) ParseError!void {
     timestamp.year = std.fmt.parseInt(u16, year, 10) catch return error.InvalidTimestamp;
     timestamp.month = std.fmt.parseInt(u8, month, 10) catch return error.InvalidTimestamp;
@@ -241,4 +251,24 @@ test "computes new days over year boundary" {
     const new_timestamp = timestamp.addOrSubtractDays(days_to_increment);
 
     try std.testing.expectEqual(@as(i8, 0), new_timestamp.compare(expected_timestamp));
+}
+
+test "should print the timestamp correctly" {
+    const timestamp = Timestamp{
+        .year = 2022,
+        .month = 5,
+        .day = 1,
+        .hour = 16,
+        .minute = 40,
+        .second = 5,
+    };
+    const expected_string = "2022-05-01T16:40:05Z";
+
+    var buffer = std.ArrayList(u8).init(std.testing.allocator);
+    defer buffer.deinit();
+
+    var writer = buffer.writer();
+    try writer.print("{}", .{timestamp});
+
+    try std.testing.expectEqualStrings(expected_string, buffer.items);
 }
