@@ -92,6 +92,15 @@ pub fn generate(comptime thread_count: usize) !Ed25519.KeyPair {
     return context.key.?;
 }
 
+pub fn isValid(key: [32]u8) bool {
+    if (!hasMagicIdentifier(key)) return false;
+
+    const key_month_year = KeyMonthYear.fromKey(key) catch return false;
+    const current_date = KeyMonthYear.fromMs(@intCast(u64, std.time.milliTimestamp()));
+
+    return key_month_year.checkExpirationDate(current_date);
+}
+
 pub fn printKey(key: []const u8, writer: anytype) !void {
     try writer.writeAll("0x");
     for (key) |byte| {
@@ -99,6 +108,24 @@ pub fn printKey(key: []const u8, writer: anytype) !void {
         const second_digit = byte & 0x0f;
         try writer.print("{x}{x}", .{ first_digit, second_digit });
     }
+}
+
+pub fn secretKeyFromHexString(hex: []const u8) !Ed25519.SecretKey {
+    var key_buf: [Ed25519.SecretKey.encoded_length]u8 = undefined;
+    _ = try std.fmt.hexToBytes(&key_buf, hex);
+    return try Ed25519.SecretKey.fromBytes(key_buf);
+}
+
+pub fn publicKeyFromHexString(hex: []const u8) !Ed25519.PublicKey {
+    var key_buf: [Ed25519.PublicKey.encoded_length]u8 = undefined;
+    _ = try std.fmt.hexToBytes(&key_buf, hex);
+    return try Ed25519.PublicKey.fromBytes(key_buf);
+}
+
+pub fn signatureFromHexString(hex: []const u8) !Ed25519.Signature {
+    var key_buf: [Ed25519.Signature.encoded_length]u8 = undefined;
+    _ = try std.fmt.hexToBytes(&key_buf, hex);
+    return Ed25519.Signature.fromBytes(key_buf);
 }
 
 fn generateValidKeyPairThreaded(context: *ThreadContext) !void {
@@ -118,9 +145,9 @@ fn generateValidKeyPairThreaded(context: *ThreadContext) !void {
 
 fn tryGenerate(current_date: KeyMonthYear) ?Ed25519.KeyPair {
     const key_pair = Ed25519.KeyPair.create(null) catch return null;
-    if (hasMagicIdentifier(key_pair.public_key)) {
+    if (hasMagicIdentifier(key_pair.public_key.toBytes())) {
         // Try to get a valid year from the public key
-        const key_month_year = KeyMonthYear.fromKey(key_pair.public_key) catch return null;
+        const key_month_year = KeyMonthYear.fromKey(key_pair.public_key.toBytes()) catch return null;
         std.log.debug("Found key that expires on {}/{}", .{ key_month_year.month, key_month_year.year });
         if (key_month_year.checkExpirationDate(current_date)) {
             return key_pair;
