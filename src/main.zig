@@ -29,7 +29,14 @@ pub fn main() anyerror!void {
     var args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
 
-    var spring_args = try Args.init(args);
+    var spring_args = Args.init(args) catch |err| switch (err) {
+        error.NoArgs => {
+            log.err("A run mode must be specified", .{});
+            return;
+        },
+        else => return err,
+    };
+
     switch (spring_args) {
         .server => |server_args| try server_mode.run(allocator, server_args.port),
         .key => try key_mode.run(),
