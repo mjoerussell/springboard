@@ -1,5 +1,6 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const Ed25519 = std.crypto.sign.Ed25519;
 
 const server_lib = @import("../server.zig");
 const Server = server_lib.Server;
@@ -10,6 +11,8 @@ const Board = @import("../Board.zig");
 const Timestamp = @import("../Timestamp.zig");
 
 const http = @import("tortie").http;
+
+const log = std.log.scoped(.server);
 
 pub fn run(allocator: Allocator, port: u16) !void {
     var localhost = try std.net.Address.parseIp("0.0.0.0", port);
@@ -31,7 +34,7 @@ pub fn run(allocator: Allocator, port: u16) !void {
         if (maybe_client) |client| {
             if (client.is_reading) {
                 handleIncomingRequest(allocator, client) catch |err| {
-                    std.debug.print("Error handling incoming message: {}\n", .{err});
+                    log.debug("Error handling incoming message: {}\n", .{err});
                 };
             } else {
                 client.deinit();
@@ -67,7 +70,7 @@ fn handleIncomingRequest(allocator: Allocator, client: *Client) !void {
 
                 try response.write(writer);
                 client.len = fbs.pos;
-                std.log.info("Response len = {}", .{client.len});  
+                log.info("Response len = {}", .{client.len});  
                 
                 try client.send();
                 return;
@@ -80,7 +83,7 @@ fn handleIncomingRequest(allocator: Allocator, client: *Client) !void {
             const board_path_buf = getBoardPath("boards/", public_key);
             var board_file = cwd.openFile(&board_path_buf, .{}) catch |err| switch (err) {
                 error.FileNotFound => {
-                    std.log.warn("Tried to get non-existant board", .{});
+                    log.warn("Tried to get non-existant board", .{});
                     try writer.writeAll("HTTP/1.1 404 Not Found\r\n\r\n");
                     client.len = fbs.pos;
                     try client.send();
@@ -107,7 +110,7 @@ fn handleIncomingRequest(allocator: Allocator, client: *Client) !void {
             
             var board_buf: [Board.board_size]u8 = undefined;
             const board_len = board_reader.readAll(&board_buf) catch |err| {
-                std.log.warn("Error reading board content: {} | Board = {s}", .{err, public_key});
+                log.warn("Error reading board content: {} | Board = {s}", .{err, public_key});
                 try writer.writeAll("HTTP/1.1 500 Internal Server Error\r\n\r\n");
                 client.len = fbs.pos;
                 try client.send();
@@ -115,7 +118,7 @@ fn handleIncomingRequest(allocator: Allocator, client: *Client) !void {
             };
 
             const board = Board.init(board_buf[0..board_len]) catch |err| {
-                std.log.warn("Tried loading an invalid board: Err = {} | Board = {s}", .{err, public_key});
+                log.warn("Tried loading an invalid board: Err = {} | Board = {s}", .{err, public_key});
                 try writer.writeAll("HTTP/1.1 404 Not Found\r\n\r\n");
                 client.len = fbs.pos;
                 try client.send();
@@ -158,113 +161,73 @@ fn handleIncomingRequest(allocator: Allocator, client: *Client) !void {
             const cwd = std.fs.cwd();
             const public_key = request.uri[1..];
 
-            // TODO: duplicate of above
-            var pub_key = KeyPair.publicKeyFromHexString(public_key) catch {
-                std.log.warn("Invalid public key", .{});
+            var pub_key = getPublicKeyFromUri(request.uri) catch {
+                log.warn("Invalid public key", .{});
                 try writer.writeAll("HTTP/1.1 403 Forbidden\r\n\r\n");
                 client.len = fbs.pos;
                 try client.send();
                 return;
             };
-
-            // Make sure that the key conforms to the Spring83 standard
-            if (!KeyPair.isValid(pub_key.toBytes())) {
-                std.log.warn("Invalid public key", .{});
+            
+            if (try denylistContainsKey("denylist.txt", public_key)) {
+                log.warn("Key belongs to denylist, board upload is forbidden", .{});
                 try writer.writeAll("HTTP/1.1 403 Forbidden\r\n\r\n");
                 client.len = fbs.pos;
                 try client.send();
                 return;
             }
             
-            // Check the denylist to see if this key is on it.
-            var denylist_file = try cwd.openFile("denylist.txt", .{});
-            defer denylist_file.close();
-
-            var denylist = try denylist_file.readToEndAlloc(allocator, std.math.maxInt(u32));
-            defer allocator.free(denylist);
-
-            var invalid_keys = std.mem.split(u8, denylist, "\n");
-            while (invalid_keys.next()) |invalid_key| {
-                if (std.mem.eql(u8, invalid_key, public_key)) {
-                    try writer.writeAll("HTTP/1.1 403 Forbidden\r\n\r\n");
-                    client.len = fbs.pos;
-                    try client.send();
-                    return;
-                }
-            }
-            
             // Make sure that the user actually sent a board in the request body
             if (request.body == null) {
-                std.log.warn("No body sent in request", .{});
+                log.warn("No body sent in request", .{});
                 try writer.writeAll("HTTP/1.1 400 Bad Request\r\n\r\n");
                 try client.send();
                 return;
             }
 
-            // Make sure that the board is not too large and contains a valid <time> element
-            var board = Board.init(request.body.?) catch |err| switch (err) {
+            // Make sure that a signature was provided and, if so, that it is the valid signature
+            // for the board as given.
+            const signature = request.headers.getFirstValue("Spring-Signature") orelse {
+                log.warn("No board signature provided", .{});
+                try writer.writeAll("HTTP/1.1 400 Bad Request\r\n\r\n");
+                client.len = fbs.pos;
+                try client.send();
+                return;
+            };
+
+            const board = validateIncomingBoard(request.body.?, signature, pub_key) catch |err| switch (err) {
                 error.TooLarge => {
                     try writer.writeAll("HTTP/1.1 413 Payload Too Large\r\n\r\n");
                     client.len = fbs.pos;
                     try client.send();
                     return;
                 },
-                error.InvalidTimestamp => {
-                    std.log.warn("Board timestamp was invalid", .{});
+                error.InvalidPublicKey, error.InvalidTimestamp => {
+                    log.warn("Board timestamp was invalid", .{});
                     try writer.writeAll("HTTP/1.1 400 Bad Request\r\n\r\n");
                     client.len = fbs.pos;
                     try client.send();
                     return;
-                }
-            };
-            
-            // Make sure that a signature was provided and, if so, that it is the valid signature
-            // for the board as given.
-            const signature = request.headers.getFirstValue("Spring-Signature") orelse {
-                std.log.warn("No board signature provided", .{});
-                try writer.writeAll("HTTP/1.1 400 Bad Request\r\n\r\n");
-                client.len = fbs.pos;
-                try client.send();
-                return;
-            };
-
-            board.verifySignature(signature, pub_key) catch {
-                std.log.warn("Board signature was invalid", .{});
-                try writer.writeAll("HTTP/1.1 403 Forbidden\r\n\r\n");
-                client.len = fbs.pos;
-                try client.send();
-                return;
-            };
-
-            const board_path_buf = getBoardPath("boards/", public_key);
-
-            // The final step is to check the existing board timestamp. If the board does not exist yet,
-            // then there's nothing else to do and we can just write the file. Otherwise, we have to make
-            // sure that the new board's timestamp comes _after_ the existing board's timestamp.
-            if (cwd.openFile(&board_path_buf, .{})) |existing_board_file| {
-                var existing_board_buf: [Board.board_size]u8 = undefined;
-                var existing_board_len = try existing_board_file.readAll(&existing_board_buf);
-                
-                var existing_board = try Board.init(existing_board_buf[0..existing_board_len]);
-                // These can't fail because we've already validated the timestamp in Board.init()
-                var existing_board_timestamp = existing_board.getTimestamp() catch unreachable;
-                var new_board_timestamp = board.getTimestamp() catch unreachable;
-                // If this is true, then the existing board has a timestamp that is either the same or in
-                // the future from the incoming board's timestamp, which is not allowed to happen.
-                if (existing_board_timestamp.compare(new_board_timestamp) >= 0) {
-                    std.log.warn("Board already exists and existing timestamp is newer", .{});
+                },
+                error.InvalidSignature => {
+                    log.warn("Board signature was invalid", .{});
+                    try writer.writeAll("HTTP/1.1 403 Forbidden\r\n\r\n");
+                    client.len = fbs.pos;
+                    try client.send();
+                    return;
+                },
+                error.OutdatedTimestamp => {
+                    log.warn("Board already exists and existing timestamp is newer", .{});
                     try writer.writeAll("HTTP/1.1 409 Conflict\r\n\r\n");
                     client.len = fbs.pos;
                     try client.send();
                     return;
-                }
+                },
+            };
 
-            } else |err| {
-                if (err != error.FileNotFound) return err;
-            }
-
-            std.log.info("Creating board at boards/{s}", .{public_key});
+            log.info("Creating board at boards/{s}", .{public_key});
             
+            const board_path_buf = getBoardPath("boards/", public_key);
             var board_file = try cwd.createFile(&board_path_buf, .{});
             defer board_file.close();
 
@@ -294,6 +257,76 @@ fn handleIncomingRequest(allocator: Allocator, client: *Client) !void {
             try client.send();
         }
     }
+}
+
+fn getPublicKeyFromUri(uri: []const u8) !Ed25519.PublicKey {
+    var pub_key = KeyPair.publicKeyFromHexString(uri[1..]) catch return error.InvalidKey;
+
+    // Make sure that the key conforms to the Spring83 standard
+    if (!KeyPair.isValid(pub_key.toBytes())) return error.InvalidKey;
+
+    return pub_key;
+}
+
+fn denylistContainsKey(denylist_filename: []const u8, public_key: []const u8) !bool {
+    // Check the denylist to see if this key is on it.
+    const cwd = std.fs.cwd();
+    var denylist_file = try cwd.openFile(denylist_filename, .{});
+    defer denylist_file.close();
+
+    var denylist_buf: [65]u8 = undefined;
+    while (denylist_file.read(&denylist_buf)) |len| {
+        if (len == 0) return false;
+        if (std.mem.eql(u8, denylist_buf[0..64][0..], public_key)) return true;
+    } else |_| return false;
+}
+
+const BoardValidationError = error{
+    TooLarge,
+    InvalidTimestamp,
+    InvalidPublicKey,
+    InvalidSignature,
+    OutdatedTimestamp,
+};
+
+fn validateIncomingBoard(board_content: []const u8, signature: []const u8, public_key: Ed25519.PublicKey) BoardValidationError!Board {
+    // Make sure that the board is not too large and contains a valid <time> element
+    var board = Board.init(board_content) catch |err| switch (err) {
+        error.TooLarge => return BoardValidationError.TooLarge,
+        error.InvalidTimestamp => return BoardValidationError.InvalidTimestamp,
+    };
+    
+    board.verifySignature(signature, public_key) catch return error.InvalidSignature;
+
+    var board_path_buf: [200]u8 = undefined;
+    const board_path = std.fmt.bufPrint(&board_path_buf, "boards/{}", .{std.fmt.fmtSliceHexLower(&public_key.toBytes())}) catch return error.InvalidPublicKey;
+
+    const cwd = std.fs.cwd();
+    if (cwd.openFile(board_path, .{})) |existing_board_file| blk: {
+        defer existing_board_file.close();
+
+        // The final step is to check the existing board timestamp. If the board does not exist yet,
+        // then there's nothing else to do and we can just write the file. Otherwise, we have to make
+        // sure that the new board's timestamp comes _after_ the existing board's timestamp.
+        var existing_board_buf: [Board.board_size]u8 = undefined;
+        var existing_board_len = existing_board_file.readAll(&existing_board_buf) catch break :blk;
+        
+        var existing_board = Board.init(existing_board_buf[0..existing_board_len]) catch {
+            std.log.info("An error was found while validating an existing board. The board will be replaced.", .{});
+            break :blk;
+        };
+        // These can't fail because we've already validated the timestamp in Board.init()
+        var existing_board_timestamp = existing_board.getTimestamp() catch unreachable;
+        var new_board_timestamp = board.getTimestamp() catch unreachable;
+        
+        // If this is true, then the existing board has a timestamp that is either the same or in
+        // the future from the incoming board's timestamp, which is not allowed to happen.
+        if (existing_board_timestamp.compare(new_board_timestamp) >= 0) {
+            return error.OutdatedTimestamp;
+        }
+    } else |_| {}
+
+    return board;
 }
 
 fn getBoardPath(comptime board_path_prefix: []const u8, public_key: []const u8) [board_path_prefix.len + 64]u8 {
