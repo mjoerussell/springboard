@@ -48,13 +48,12 @@ pub const Args = union(enum) {
                     sign_args.key_file = args[index + 1];
                     init_tracker |= 2;
                 } else if (std.mem.eql(u8, arg, "--append-timestamp")) {
-                    if (index == args.len - 1) return error.ExpectedFollowUp;
-                    sign_args.append_timestamp = std.ascii.eqlIgnoreCase(args[index + 1], "true");
+                    sign_args.append_timestamp = true;
                     init_tracker |= 4;
                 }
             }
-
-            if (init_tracker == 8 or init_tracker == 3) return sign_args;
+            
+            if (init_tracker == 7 or init_tracker == 3) return sign_args;
             return error.MissingArg;
         }
     };
