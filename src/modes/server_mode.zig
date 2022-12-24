@@ -33,9 +33,24 @@ pub fn run(allocator: Allocator, port: u16) !void {
 
         if (maybe_client) |client| {
             if (client.is_reading) {
-                handleIncomingRequest(allocator, client) catch |err| {
-                    log.debug("Error handling incoming message: {}\n", .{err});
+                var fbs = std.io.fixedBufferStream(&client.buffer);
+                
+                client.response = http.Response.init(allocator) catch {
+                    fbs.writer().writeAll("HTTP/1.1 500 Internal Server Error\r\n\r\n") catch continue;
+                    client.send() catch {};
+                    continue;
                 };
+
+                if (http.Request.parse(allocator, client.buffer[0..client.len])) |request| {
+                    client.request = request;
+                    handleIncomingRequest(client) catch |err| {
+                        log.debug("Error handling incoming message: {}\n", .{err});
+                    };
+                } else |_| {}
+
+                client.response.write(fbs.writer()) catch continue;
+                client.len = fbs.pos;
+                client.send() catch {};
             } else {
                 client.deinit();
             }
@@ -44,49 +59,32 @@ pub fn run(allocator: Allocator, port: u16) !void {
     }
 }
 
-fn handleIncomingRequest(allocator: Allocator, client: *Client) !void {
-    var fbs = std.io.fixedBufferStream(&client.buffer);
-    var writer = fbs.writer();
-    
-    var request = http.Request.parse(allocator, client.buffer[0..client.len]) catch {
-        try writer.writeAll("HTTP/1.1 400 Bad Request\r\n\r\n");
-        try client.send();
-        return;
-    };
-
-    switch (request.method) {
+fn handleIncomingRequest(client: *Client) !void {
+    switch (client.request.method) {
         .get => {
-            if (std.mem.eql(u8, request.uri, "/")) {
+            if (std.mem.eql(u8, client.request.uri, "/")) {
                 const cwd = std.fs.cwd();
                 var index_file = try cwd.openFile("static/index.html", .{});
                 defer index_file.close();
 
-                var response = try http.Response.initStatus(allocator, .ok);
-                try response.addHeader("Content-Type", "text/html");
+                try client.response.addHeader("Content-Type", "text/html");
                 
                 var index_buffer: [2048]u8 = undefined;
                 const index_len = try index_file.readAll(&index_buffer);
-                response.body = index_buffer[0..index_len];
+                client.response.body = index_buffer[0..index_len];
 
-                try response.write(writer);
-                client.len = fbs.pos;
-                log.info("Response len = {}", .{client.len});  
-                
-                try client.send();
                 return;
             }
 
             // getting a board
-            const public_key = request.uri[1..];
+            const public_key = client.request.uri[1..];
             const cwd = std.fs.cwd();
 
             const board_path_buf = getBoardPath("boards/", public_key);
             var board_file = cwd.openFile(&board_path_buf, .{}) catch |err| switch (err) {
                 error.FileNotFound => {
                     log.warn("Tried to get non-existant board", .{});
-                    try writer.writeAll("HTTP/1.1 404 Not Found\r\n\r\n");
-                    client.len = fbs.pos;
-                    try client.send();
+                    client.response.status = .not_found;
                     return;
                 },
                 else => return err,
@@ -102,32 +100,26 @@ fn handleIncomingRequest(allocator: Allocator, client: *Client) !void {
                     else => std.log.warn("Unexpected error when reading board signature. Err = {} | Board = {s}", .{err, public_key}),
                 }
 
-                try writer.writeAll("HTTP/1.1 404 Not Found\r\n\r\n");
-                client.len = fbs.pos;
-                try client.send();
+                client.response.status = .not_found;
                 return;
             };
             
             var board_buf: [Board.board_size]u8 = undefined;
             const board_len = board_reader.readAll(&board_buf) catch |err| {
                 log.warn("Error reading board content: {} | Board = {s}", .{err, public_key});
-                try writer.writeAll("HTTP/1.1 500 Internal Server Error\r\n\r\n");
-                client.len = fbs.pos;
-                try client.send();
+                client.response.status = .internal_server_error;
                 return;
             };
 
             const board = Board.init(board_buf[0..board_len]) catch |err| {
                 log.warn("Tried loading an invalid board: Err = {} | Board = {s}", .{err, public_key});
-                try writer.writeAll("HTTP/1.1 404 Not Found\r\n\r\n");
-                client.len = fbs.pos;
-                try client.send();
+                client.response.status = .not_found;
                 return;
             };
 
             // Check if the board is newer than the 'If-Modified-Since' header, if the header was provided by
             // the client.
-            if (request.headers.getFirstValue("If-Modified-Since")) |if_modified| {
+            if (client.request.headers.getFirstValue("If-Modified-Since")) |if_modified| {
                 // Parse the header value. If the provided value is not a valid timestamp, just abort
                 // this check and pretend the header wasn't provided at all.
                 if (Timestamp.parse(if_modified)) |last_modified_ts| {
@@ -136,91 +128,68 @@ fn handleIncomingRequest(allocator: Allocator, client: *Client) !void {
                     const board_ts = board.getTimestamp() catch unreachable;
                     if (board_ts.compare(last_modified_ts) <= 0) {
                         // Board is older than if-modified-since, so the server should respond with 304
-                        try writer.writeAll("HTTP/1.1 304 Not Modified\r\n\r\n");
-                        client.len = fbs.pos;
-                        try client.send();
+                        client.response.status = .not_modified;
                         return;
                     }
                 } else |_| {}
             }
 
-            var response = try http.Response.initStatus(allocator, .ok);
-            defer response.deinit();
-
-            try response.addHeader("Content-Type", "text/html;charset=utf-8");
-            try response.addHeader("Spring-Version", "83");
-            try response.addHeader("Spring-Signature", signature);
-            try response.addHeader("Content-Length", board_len);
-            response.body = board_buf[0..board_len];
-            
-            try response.write(writer);
-            client.len = fbs.pos;
-            try client.send();
+            try client.response.addHeader("Content-Type", "text/html;charset=utf-8");
+            try client.response.addHeader("Spring-Version", "83");
+            try client.response.addHeader("Spring-Signature", signature);
+            try client.response.addHeader("Content-Length", board_len);
+            client.response.body = board_buf[0..board_len];
         },
         .put => {
             const cwd = std.fs.cwd();
-            const public_key = request.uri[1..];
+            const public_key = client.request.uri[1..];
 
-            var pub_key = getPublicKeyFromUri(request.uri) catch {
+            var pub_key = getPublicKeyFromUri(client.request.uri) catch {
                 log.warn("Invalid public key", .{});
-                try writer.writeAll("HTTP/1.1 403 Forbidden\r\n\r\n");
-                client.len = fbs.pos;
-                try client.send();
+                client.response.status = .forbidden;
                 return;
             };
             
             if (try denylistContainsKey("denylist.txt", public_key)) {
                 log.warn("Key belongs to denylist, board upload is forbidden", .{});
-                try writer.writeAll("HTTP/1.1 403 Forbidden\r\n\r\n");
-                client.len = fbs.pos;
-                try client.send();
+                client.response.status = .forbidden;
                 return;
             }
             
             // Make sure that the user actually sent a board in the request body
-            if (request.body == null) {
+            if (client.request.body == null) {
                 log.warn("No body sent in request", .{});
-                try writer.writeAll("HTTP/1.1 400 Bad Request\r\n\r\n");
-                try client.send();
+                client.response.status = .bad_request;
                 return;
             }
 
             // Make sure that a signature was provided and, if so, that it is the valid signature
             // for the board as given.
-            const signature = request.headers.getFirstValue("Spring-Signature") orelse {
+            const signature = client.request.headers.getFirstValue("Spring-Signature") orelse {
                 log.warn("No board signature provided", .{});
-                try writer.writeAll("HTTP/1.1 400 Bad Request\r\n\r\n");
-                client.len = fbs.pos;
-                try client.send();
+                client.response.status = .bad_request;
                 return;
             };
 
-            const board = validateIncomingBoard(request.body.?, signature, pub_key) catch |err| switch (err) {
+            const board = validateIncomingBoard(client.request.body.?, signature, pub_key) catch |err| switch (err) {
                 error.TooLarge => {
-                    try writer.writeAll("HTTP/1.1 413 Payload Too Large\r\n\r\n");
-                    client.len = fbs.pos;
-                    try client.send();
+                    log.warn("Client tried to upload jumbo board", .{});
+                    client.response.status = .payload_too_large;
                     return;
                 },
                 error.InvalidPublicKey, error.InvalidTimestamp => {
                     log.warn("Board timestamp was invalid", .{});
-                    try writer.writeAll("HTTP/1.1 400 Bad Request\r\n\r\n");
-                    client.len = fbs.pos;
-                    try client.send();
+                    client.response.status = .bad_request;
                     return;
                 },
                 error.InvalidSignature => {
                     log.warn("Board signature was invalid", .{});
-                    try writer.writeAll("HTTP/1.1 403 Forbidden\r\n\r\n");
-                    client.len = fbs.pos;
-                    try client.send();
+                    client.response.status = .forbidden;
                     return;
                 },
                 error.OutdatedTimestamp => {
                     log.warn("Board already exists and existing timestamp is newer", .{});
-                    try writer.writeAll("HTTP/1.1 409 Conflict\r\n\r\n");
-                    client.len = fbs.pos;
-                    try client.send();
+                    client.response.status = .conflict;
                     return;
                 },
             };
@@ -235,26 +204,17 @@ fn handleIncomingRequest(allocator: Allocator, client: *Client) !void {
             try board_writer.print("{s}\n", .{signature});
             try board_writer.writeAll(board.content[0..board.len]);
             
-            try writer.writeAll("HTTP/1.1 201 Created\r\n\r\n");
-            client.len = fbs.pos;
-            try client.send();
-            return;
+            client.response.status = .created;
         },
         .options => {
-            try writer.writeAll(
-                \\HTTP/1.1 204 No Content
-                \\Access-Control-Allow-Methods: GET, OPTIONS, PUT
-                \\Access-Control-Allow-Origin: *
-                \\Access-Control-Allow-Headers: Content-Type, If-Modified-Since, Spring-Signature, Spring-Version
-                \\Access-Control-Expose-Headers: Content-Type, Last-Modified, Spring-Signature, Spring-Version
-            );
-
-            client.len = fbs.pos;
-            try client.send();
+            client.response.status = .no_content;
+            try client.response.addHeader("Access-Control-Allow-Methods", "GET, OPTIONS, PUT");
+            try client.response.addHeader("Access-Control-Allow-Origin", "*");
+            try client.response.addHeader("Access-Control-Allow-Headers", "Content-Type, If-Modified-Since, Spring-Signature, Spring-Version");
+            try client.response.addHeader("Access-Control-Expose-Headers", "Content-Type, Last-Modified, Spring-Signature, Spring-Version");
         },
         else => {
-            try writer.writeAll("HTTP/1.1 405 Method Not Allowed\r\n\r\n");
-            try client.send();
+            client.response.status = .method_not_allowed;
         }
     }
 }

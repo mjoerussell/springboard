@@ -4,6 +4,7 @@ const os = std.os;
 const net = std.net;
 const windows = std.os.windows;
 const winsock = @import("./winsock.zig");
+const http = @import("tortie").http;
 
 pub const Server = switch (builtin.os.tag) {
     .windows => WindowsServer,
@@ -20,6 +21,8 @@ pub const WindowsClient = struct {
     socket: os.socket_t,
     buffer: [4096]u8 = undefined,
     len: usize = 0,
+    request: http.Request,
+    response: http.Response,
     is_reading: bool = true,
     overlapped: windows.OVERLAPPED = .{
         .Internal = 0,
@@ -34,6 +37,8 @@ pub const WindowsClient = struct {
     },
 
     pub fn deinit(client: *WindowsClient) void {
+        client.request.deinit();
+        client.response.deinit();
         // Shutdown the socket before closing it to ensure that nobody is currently using the socket
         switch (os.windows.ws2_32.shutdown(client.socket, 1)) {
             0 => {
@@ -119,7 +124,11 @@ const WindowsServer = struct {
             };
         } else {
             _ = try windows.CreateIoCompletionPort(client_sock, server.io_port, undefined, 0);
-            server.clients[server.client_count] = WindowsClient{ .socket = client_sock };
+            server.clients[server.client_count] = WindowsClient{ 
+                .socket = client_sock,
+                .request = undefined,
+                .response = undefined,  
+            };
             defer server.client_count += 1;
             return &server.clients[server.client_count];
         }
