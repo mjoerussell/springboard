@@ -63,149 +63,13 @@ fn handleIncomingRequest(client: *Client) !void {
     switch (client.request.method) {
         .get => {
             if (std.mem.eql(u8, client.request.uri, "/")) {
-                const cwd = std.fs.cwd();
-                var index_file = try cwd.openFile("static/index.html", .{});
-                defer index_file.close();
-
-                try client.response.addHeader("Content-Type", "text/html");
-                
-                var index_buffer: [2048]u8 = undefined;
-                const index_len = try index_file.readAll(&index_buffer);
-                client.response.body = index_buffer[0..index_len];
-
-                return;
+                return try handleGetIndex(client);
             }
 
             // getting a board
-            const public_key = client.request.uri[1..];
-            const cwd = std.fs.cwd();
-
-            const board_path_buf = getBoardPath("boards/", public_key);
-            var board_file = cwd.openFile(&board_path_buf, .{}) catch |err| switch (err) {
-                error.FileNotFound => {
-                    log.warn("Tried to get non-existant board", .{});
-                    client.response.status = .not_found;
-                    return;
-                },
-                else => return err,
-            };
-
-            var board_reader = board_file.reader();
-
-            var sig_buf: [129]u8 = undefined;
-            const signature = board_reader.readUntilDelimiter(&sig_buf, '\n') catch |err| {
-                switch (err) {
-                    error.EndOfStream => std.log.warn("Board is corrupted - could not read entire signature. Board = {s}", .{public_key}),
-                    error.StreamTooLong => std.log.warn("Board is corrupted - signature value is too long, or is not properly terminated. Board = {s}", .{public_key}),
-                    else => std.log.warn("Unexpected error when reading board signature. Err = {} | Board = {s}", .{err, public_key}),
-                }
-
-                client.response.status = .not_found;
-                return;
-            };
-            
-            var board_buf: [Board.board_size]u8 = undefined;
-            const board_len = board_reader.readAll(&board_buf) catch |err| {
-                log.warn("Error reading board content: {} | Board = {s}", .{err, public_key});
-                client.response.status = .internal_server_error;
-                return;
-            };
-
-            const board = Board.init(board_buf[0..board_len]) catch |err| {
-                log.warn("Tried loading an invalid board: Err = {} | Board = {s}", .{err, public_key});
-                client.response.status = .not_found;
-                return;
-            };
-
-            // Check if the board is newer than the 'If-Modified-Since' header, if the header was provided by
-            // the client.
-            if (client.request.headers.getFirstValue("If-Modified-Since")) |if_modified| {
-                // Parse the header value. If the provided value is not a valid timestamp, just abort
-                // this check and pretend the header wasn't provided at all.
-                if (Timestamp.parse(if_modified)) |last_modified_ts| {
-                    // The timestamp can't be invalid here because it would have been caught in the board
-                    // initialization above.
-                    const board_ts = board.getTimestamp() catch unreachable;
-                    if (board_ts.compare(last_modified_ts) <= 0) {
-                        // Board is older than if-modified-since, so the server should respond with 304
-                        client.response.status = .not_modified;
-                        return;
-                    }
-                } else |_| {}
-            }
-
-            try client.response.addHeader("Content-Type", "text/html;charset=utf-8");
-            try client.response.addHeader("Spring-Version", "83");
-            try client.response.addHeader("Spring-Signature", signature);
-            try client.response.addHeader("Content-Length", board_len);
-            client.response.body = board_buf[0..board_len];
+            return try handleGetBoard(client);
         },
-        .put => {
-            const cwd = std.fs.cwd();
-            const public_key = client.request.uri[1..];
-
-            var pub_key = getPublicKeyFromUri(client.request.uri) catch {
-                log.warn("Invalid public key", .{});
-                client.response.status = .forbidden;
-                return;
-            };
-            
-            if (try denylistContainsKey("denylist.txt", public_key)) {
-                log.warn("Key belongs to denylist, board upload is forbidden", .{});
-                client.response.status = .forbidden;
-                return;
-            }
-            
-            // Make sure that the user actually sent a board in the request body
-            if (client.request.body == null) {
-                log.warn("No body sent in request", .{});
-                client.response.status = .bad_request;
-                return;
-            }
-
-            // Make sure that a signature was provided and, if so, that it is the valid signature
-            // for the board as given.
-            const signature = client.request.headers.getFirstValue("Spring-Signature") orelse {
-                log.warn("No board signature provided", .{});
-                client.response.status = .bad_request;
-                return;
-            };
-
-            const board = validateIncomingBoard(client.request.body.?, signature, pub_key) catch |err| switch (err) {
-                error.TooLarge => {
-                    log.warn("Client tried to upload jumbo board", .{});
-                    client.response.status = .payload_too_large;
-                    return;
-                },
-                error.InvalidPublicKey, error.InvalidTimestamp => {
-                    log.warn("Board timestamp was invalid", .{});
-                    client.response.status = .bad_request;
-                    return;
-                },
-                error.InvalidSignature => {
-                    log.warn("Board signature was invalid", .{});
-                    client.response.status = .forbidden;
-                    return;
-                },
-                error.OutdatedTimestamp => {
-                    log.warn("Board already exists and existing timestamp is newer", .{});
-                    client.response.status = .conflict;
-                    return;
-                },
-            };
-
-            log.info("Creating board at boards/{s}", .{public_key});
-            
-            const board_path_buf = getBoardPath("boards/", public_key);
-            var board_file = try cwd.createFile(&board_path_buf, .{});
-            defer board_file.close();
-
-            var board_writer = board_file.writer();
-            try board_writer.print("{s}\n", .{signature});
-            try board_writer.writeAll(board.content[0..board.len]);
-            
-            client.response.status = .created;
-        },
+        .put => return try handlePutBoard(client),
         .options => {
             client.response.status = .no_content;
             try client.response.addHeader("Access-Control-Allow-Methods", "GET, OPTIONS, PUT");
@@ -219,6 +83,163 @@ fn handleIncomingRequest(client: *Client) !void {
     }
 }
 
+/// GET /. Returns the main index.html page.
+fn handleGetIndex(client: *Client) !void {
+    const cwd = std.fs.cwd();
+    var index_file = try cwd.openFile("static/index.html", .{});
+    defer index_file.close();
+
+    try client.response.addHeader("Content-Type", "text/html");
+    
+    var index_buffer: [2048]u8 = undefined;
+    const index_len = try index_file.readAll(&index_buffer);
+    client.response.body = index_buffer[0..index_len];
+}
+
+/// GET /{key}. Tries to return the board uploaded under the specified key, if it exists.
+fn handleGetBoard(client: *Client) !void {
+    // TODO: Validate the board signature here, so that the client doesn't have to do it.
+    // Return some kind of error code in case the signature doesn't match the board content. 
+    // TODO: Implement this special case: https://github.com/robinsloan/spring-83/blob/main/draft-20220629.md#helping-developers
+    const public_key = client.request.uri[1..];
+    const cwd = std.fs.cwd();
+
+    const board_path_buf = getBoardPath("boards/", public_key);
+    var board_file = cwd.openFile(&board_path_buf, .{}) catch |err| switch (err) {
+        error.FileNotFound => {
+            log.warn("Tried to get non-existant board", .{});
+            client.response.status = .not_found;
+            return;
+        },
+        else => return err,
+    };
+
+    var board_reader = board_file.reader();
+
+    var sig_buf: [129]u8 = undefined;
+    const signature = board_reader.readUntilDelimiter(&sig_buf, '\n') catch |err| {
+        switch (err) {
+            error.EndOfStream => std.log.warn("Board is corrupted - could not read entire signature. Board = {s}", .{public_key}),
+            error.StreamTooLong => std.log.warn("Board is corrupted - signature value is too long, or is not properly terminated. Board = {s}", .{public_key}),
+            else => std.log.warn("Unexpected error when reading board signature. Err = {} | Board = {s}", .{err, public_key}),
+        }
+
+        client.response.status = .not_found;
+        return;
+    };
+    
+    var board_buf: [Board.board_size]u8 = undefined;
+    const board_len = board_reader.readAll(&board_buf) catch |err| {
+        log.warn("Error reading board content: {} | Board = {s}", .{err, public_key});
+        client.response.status = .internal_server_error;
+        return;
+    };
+
+    const board = Board.init(board_buf[0..board_len]) catch |err| {
+        log.warn("Tried loading an invalid board: Err = {} | Board = {s}", .{err, public_key});
+        client.response.status = .not_found;
+        return;
+    };
+
+    // Check if the board is newer than the 'If-Modified-Since' header, if the header was provided by
+    // the client.
+    if (client.request.headers.getFirstValue("If-Modified-Since")) |if_modified| {
+        // Parse the header value. If the provided value is not a valid timestamp, just abort
+        // this check and pretend the header wasn't provided at all.
+        if (Timestamp.parse(if_modified)) |last_modified_ts| {
+            // The timestamp can't be invalid here because it would have been caught in the board
+            // initialization above.
+            const board_ts = board.getTimestamp() catch unreachable;
+            if (board_ts.compare(last_modified_ts) <= 0) {
+                // Board is older than if-modified-since, so the server should respond with 304
+                client.response.status = .not_modified;
+                return;
+            }
+        } else |_| {}
+    }
+
+    try client.response.addHeader("Content-Type", "text/html;charset=utf-8");
+    try client.response.addHeader("Spring-Version", "83");
+    try client.response.addHeader("Spring-Signature", signature);
+    try client.response.addHeader("Content-Length", board_len);
+    client.response.body = board_buf[0..board_len];
+}
+
+/// PUT /{key}. Upload or replace a board under the given key. The request must include the board's signature,
+/// and the signature must match the given key.
+fn handlePutBoard(client: *Client) !void {
+    const cwd = std.fs.cwd();
+    const public_key = client.request.uri[1..];
+
+    // Parse + validate the key part of the request path.
+    var pub_key = getPublicKeyFromUri(client.request.uri) catch {
+        log.warn("Invalid public key", .{});
+        client.response.status = .forbidden;
+        return;
+    };
+    
+    // Make sure that the key hasn't been added to the denylist.
+    if (try denylistContainsKey("denylist.txt", public_key)) {
+        log.warn("Key belongs to denylist, board upload is forbidden", .{});
+        client.response.status = .forbidden;
+        return;
+    }
+    
+    // Make sure that the user actually sent a board in the request body
+    if (client.request.body == null) {
+        log.warn("No body sent in request", .{});
+        client.response.status = .bad_request;
+        return;
+    }
+
+    // Make sure that a signature was provided and, if so, that it is the valid signature
+    // for the board as given.
+    const signature = client.request.headers.getFirstValue("Spring-Signature") orelse {
+        log.warn("No board signature provided", .{});
+        client.response.status = .bad_request;
+        return;
+    };
+
+    // Validate the new board. If there are any validation errors then abort the upload and return
+    // the proper status code.
+    const board = validateIncomingBoard(client.request.body.?, signature, pub_key) catch |err| switch (err) {
+        error.TooLarge => {
+            log.warn("Client tried to upload jumbo board", .{});
+            client.response.status = .payload_too_large;
+            return;
+        },
+        error.InvalidPublicKey, error.InvalidTimestamp => {
+            log.warn("Board timestamp was invalid", .{});
+            client.response.status = .bad_request;
+            return;
+        },
+        error.InvalidSignature => {
+            log.warn("Board signature was invalid", .{});
+            client.response.status = .forbidden;
+            return;
+        },
+        error.OutdatedTimestamp => {
+            log.warn("Board already exists and existing timestamp is newer", .{});
+            client.response.status = .conflict;
+            return;
+        },
+    };
+
+    log.info("Creating board at boards/{s}", .{public_key});
+    
+    const board_path_buf = getBoardPath("boards/", public_key);
+    var board_file = try cwd.createFile(&board_path_buf, .{});
+    defer board_file.close();
+
+    var board_writer = board_file.writer();
+    try board_writer.print("{s}\n", .{signature});
+    try board_writer.writeAll(board.content[0..board.len]);
+    
+    client.response.status = .created;
+}
+
+/// Given a URI like '/{key}', where 'key' is a hex string representing a public key,
+/// try to parse the value into a valid public key.
 fn getPublicKeyFromUri(uri: []const u8) !Ed25519.PublicKey {
     var pub_key = KeyPair.publicKeyFromHexString(uri[1..]) catch return error.InvalidKey;
 
@@ -228,6 +249,7 @@ fn getPublicKeyFromUri(uri: []const u8) !Ed25519.PublicKey {
     return pub_key;
 }
 
+/// Read the denylist and determine if the given public key is included.
 fn denylistContainsKey(denylist_filename: []const u8, public_key: []const u8) !bool {
     // Check the denylist to see if this key is on it.
     const cwd = std.fs.cwd();
@@ -289,6 +311,7 @@ fn validateIncomingBoard(board_content: []const u8, signature: []const u8, publi
     return board;
 }
 
+/// Helper function for concatenating the board directory path with a public key.
 fn getBoardPath(comptime board_path_prefix: []const u8, public_key: []const u8) [board_path_prefix.len + 64]u8 {
     var path: [board_path_prefix.len + 64]u8 = undefined;
     std.mem.copy(u8, &path, board_path_prefix);

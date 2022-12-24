@@ -1,5 +1,9 @@
 const std = @import("std");
 
+// TODO: Push mode. In this mode, springboard should allow a user to validate & upload a board to a Spring server
+// TODO: Validate mode. This mode should validate an input board and explain to the user what is wrong with it, if anything, in
+//       easy-to-understand language.
+
 pub const Args = union(enum) {
     server: ServerArgs,
     key: KeyArgs,
