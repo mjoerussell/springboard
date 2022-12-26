@@ -103,9 +103,8 @@ fn handleGetIndex(client: *Client) !void {
 
 /// GET /{key}. Tries to return the board uploaded under the specified key, if it exists.
 fn handleGetBoard(client: *Client) !void {
-    // TODO: Validate the board signature here, so that the client doesn't have to do it.
+    // @todo Validate the board signature here, so that the client doesn't have to do it.
     // Return some kind of error code in case the signature doesn't match the board content. 
-    // TODO: Implement this special case: https://github.com/robinsloan/spring-83/blob/main/draft-20220629.md#helping-developers
     const public_key = client.request.uri[1..];
     const cwd = std.fs.cwd();
 

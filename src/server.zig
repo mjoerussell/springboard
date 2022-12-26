@@ -6,11 +6,11 @@ const windows = std.os.windows;
 const winsock = @import("./winsock.zig");
 const http = @import("tortie").http;
 
-// TODO: Better async handling. Right now there's no way to create a sequence of async events on a single client.
+// @todo Better async handling. Right now there's no way to create a sequence of async events on a single client.
 //       The read and write parts much each be one-shot operations.
 
-// TODO: Linux implementation
-// TODO: Mac implementation
+// @todo Linux implementation
+// @todo Mac implementation
 pub const Server = switch (builtin.os.tag) {
     .windows => WindowsServer,
     else => @compileError("Platform not supported"),
