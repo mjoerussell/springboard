@@ -14,6 +14,11 @@ const http = @import("tortie").http;
 
 const log = std.log.scoped(.server);
 
+// This key pair is defined by the spec to be used to sign a test board. Boards should not be allowed to be uploaded
+// using this key.
+const test_public_key_hex = "ab589f4dde9fce4180fcf42c7b05185b0a02a5d682e353fa39177995083e0583";
+const test_secret_key = KeyPair.secretKeyFromHexString("3371f8b011f51632fea33ed0a3688c26a45498205c6097c352bd4d079d224419" ++ test_public_key_hex) catch unreachable;
+
 pub fn run(allocator: Allocator, port: u16) !void {
     var localhost = try std.net.Address.parseIp("0.0.0.0", port);
 
@@ -104,6 +109,10 @@ fn handleGetBoard(client: *Client) !void {
     const public_key = client.request.uri[1..];
     const cwd = std.fs.cwd();
 
+    if (std.mem.eql(u8, public_key, test_public_key_hex)) {
+        return try createAndSendTestBoard(client);
+    }
+
     const board_path_buf = getBoardPath("boards/", public_key);
     var board_file = cwd.openFile(&board_path_buf, .{}) catch |err| switch (err) {
         error.FileNotFound => {
@@ -163,6 +172,26 @@ fn handleGetBoard(client: *Client) !void {
     try client.response.addHeader("Spring-Signature", signature);
     try client.response.addHeader("Content-Length", board_len);
     client.response.body = board_buf[0..board_len];
+}
+
+fn createAndSendTestBoard(client: *Client) !void {
+    const now_ts = Timestamp.now();
+
+    var board_buffer: [128]u8 = undefined;
+    const board_content = try std.fmt.bufPrint(&board_buffer, "<time datetime=\"{}\">", .{now_ts});
+
+    const key_pair = try Ed25519.KeyPair.fromSecretKey(test_secret_key);
+
+    var signature = try key_pair.sign(board_content, null);
+
+    var sig_hex_buf: [128]u8 = undefined;
+    const sig_hex = try std.fmt.bufPrint(&sig_hex_buf, "{}", .{std.fmt.fmtSliceHexLower(&signature.toBytes())});
+
+    try client.response.addHeader("Content-Type", "text/html;charset=utf-8");
+    try client.response.addHeader("Spring-Version", "83");
+    try client.response.addHeader("Spring-Signature", sig_hex);
+    try client.response.addHeader("Content-Length", board_content.len);
+    client.response.body = board_content;
 }
 
 /// PUT /{key}. Upload or replace a board under the given key. The request must include the board's signature,
