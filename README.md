@@ -41,6 +41,5 @@ This mode runs a Spring83 server. The entire server spec API has been implemente
 To run a Spring83 server, simply run:
 
 ```bash
-$ mkdir boards/
 $ springboard server --port <port>
 ```

@@ -38,7 +38,7 @@ pub fn main() anyerror!void {
     };
 
     switch (spring_args) {
-        .server => |server_args| try server_mode.run(server_args.port),
+        .server => |server_args| try server_mode.run(server_args),
         .key => try key_mode.run(),
         .sign => |sign_args| try sign_mode.run(allocator, sign_args),
     }

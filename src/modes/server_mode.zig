@@ -5,6 +5,8 @@ const server_lib = @import("../server.zig");
 const Server = server_lib.Server;
 const Client = server_lib.Client;
 
+const Args = @import("../args.zig").Args;
+
 const KeyPair = @import("../KeyPair.zig");
 const Board = @import("../Board.zig");
 const Timestamp = @import("../Timestamp.zig");
@@ -14,19 +16,29 @@ const Response = @import("../http/Response.zig");
 
 const log = std.log.scoped(.server);
 
-// @todo When running in server mode, a boards directory should be created if it doesn't already exist.
-
 // This key pair is defined by the spec to be used to sign a test board. Boards should not be allowed to be uploaded
 // using this key.
 const test_public_key_hex = "ab589f4dde9fce4180fcf42c7b05185b0a02a5d682e353fa39177995083e0583";
 const test_secret_key = KeyPair.secretKeyFromHexString("3371f8b011f51632fea33ed0a3688c26a45498205c6097c352bd4d079d224419" ++ test_public_key_hex) catch unreachable;
 
-pub fn run(port: u16) !void {
-    var localhost = try std.net.Address.parseIp("0.0.0.0", port);
+pub fn run(args: Args.ServerArgs) !void {
+    var localhost = try std.net.Address.parseIp("0.0.0.0", args.port);
 
     var server = try Server.init(localhost);
 
-    log.info("Listening on port {}", .{port});
+    const cwd = std.fs.cwd();
+    cwd.makeDir(args.board_dir) catch |err| switch (err) {
+        error.PathAlreadyExists => {
+            log.info("Note: Tried to create board directory at \"{s}\", but the directory already exists.", .{args.board_dir});
+        },
+        else => {
+            log.err("Fatal error: Could not create the board directory at \"{s}\" - {}", .{args.board_dir, err});
+            return err;
+        },
+    };
+
+    log.info("Boards will be stored at path \"{s}\"", .{args.board_dir});
+    log.info("Listening on port {}", .{args.port});
 
     while (true) {
         if (server.accept()) |client| {
@@ -46,7 +58,7 @@ pub fn run(port: u16) !void {
                 client.response = Response.writer(fbs.writer());
                 
                 client.request = Request{ .data = client.buffer[0..client.len] };
-                handleIncomingRequest(client) catch |err| {
+                handleIncomingRequest(client, args.board_dir) catch |err| {
                     log.debug("Error handling incoming message: {}\n", .{err});
                     const status: Response.ResponseStatus = switch (err) {
                         Request.GeneralError.ParseError => .bad_request,
@@ -67,7 +79,7 @@ pub fn run(port: u16) !void {
     }
 }
 
-fn handleIncomingRequest(client: *Client) !void {
+fn handleIncomingRequest(client: *Client, board_directory: []const u8) !void {
     const method = try client.request.getMethod();
     const path = try client.request.getPath(); 
 
@@ -78,9 +90,9 @@ fn handleIncomingRequest(client: *Client) !void {
             }
 
             // getting a board
-            return try handleGetBoard(client, path);
+            return try handleGetBoard(client, path, board_directory);
         },
-        .put => return try handlePutBoard(client, path),
+        .put => return try handlePutBoard(client, path, board_directory),
         .options => {
             try client.response.writeStatus(.no_content);
             try client.response.writeHeader("Access-Control-Allow-Methods", "GET, OPTIONS, PUT");
@@ -109,18 +121,18 @@ fn handleGetIndex(client: *Client) !void {
 }
 
 /// GET /{key}. Tries to return the board uploaded under the specified key, if it exists.
-fn handleGetBoard(client: *Client, path: []const u8) !void {
+fn handleGetBoard(client: *Client, path: []const u8, board_directory: []const u8) !void {
     // @todo Validate the board signature here, so that the client doesn't have to do it.
     // Return some kind of error code in case the signature doesn't match the board content. 
     const public_key = path[1..];
-    const cwd = std.fs.cwd();
 
     if (std.mem.eql(u8, public_key, test_public_key_hex)) {
         return try createAndSendTestBoard(client);
     }
 
-    const board_path_buf = getBoardPath("boards/", public_key);
-    var board_file = cwd.openFile(&board_path_buf, .{}) catch |err| switch (err) {
+    const cwd = std.fs.cwd();
+    const board_dir = try cwd.openDir(board_directory, .{});
+    var board_file = board_dir.openFile(public_key, .{}) catch |err| switch (err) {
         error.FileNotFound => {
             log.warn("Tried to get non-existant board", .{});
             try client.response.writeStatus(.not_found);
@@ -204,8 +216,7 @@ fn createAndSendTestBoard(client: *Client) !void {
 
 /// PUT /{key}. Upload or replace a board under the given key. The request must include the board's signature,
 /// and the signature must match the given key.
-fn handlePutBoard(client: *Client, path: []const u8) !void {
-    const cwd = std.fs.cwd();
+fn handlePutBoard(client: *Client, path: []const u8, board_directory: []const u8) !void {
     const public_key = path[1..];
 
     // Parse + validate the key part of the request path.
@@ -265,8 +276,10 @@ fn handlePutBoard(client: *Client, path: []const u8) !void {
 
     log.info("Creating board at boards/{s}", .{public_key});
     
-    const board_path_buf = getBoardPath("boards/", public_key);
-    var board_file = try cwd.createFile(&board_path_buf, .{});
+    // const board_path_buf = getBoardPath("boards/", public_key);
+    const cwd = std.fs.cwd();
+    const board_dir = try cwd.openDir(board_directory, .{});
+    var board_file = try board_dir.createFile(public_key, .{});
     defer board_file.close();
 
     var board_writer = board_file.writer();
@@ -347,12 +360,4 @@ fn validateIncomingBoard(board_content: []const u8, signature: []const u8, publi
     } else |_| {}
 
     return board;
-}
-
-/// Helper function for concatenating the board directory path with a public key.
-fn getBoardPath(comptime board_path_prefix: []const u8, public_key: []const u8) [board_path_prefix.len + 64]u8 {
-    var path: [board_path_prefix.len + 64]u8 = undefined;
-    std.mem.copy(u8, &path, board_path_prefix);
-    std.mem.copy(u8, path[board_path_prefix.len..], public_key);
-    return path;
 }

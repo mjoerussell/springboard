@@ -16,16 +16,24 @@ pub const Args = union(enum) {
         // @todo Allow the user to specify the directory to use to store boards 
         // @todo Allow the user to specify the board TTL
         port: u16,
+        board_dir: []const u8 = "boards",
 
         pub fn init(args: [][]const u8) !ServerArgs {
+            var server_args = ServerArgs{ .port = undefined };
+            var init_tracker: u32 = 0;
             for (args) |arg, index| {
-                if (index == args.len - 1) return error.ExpectedFollowUp;
                 if (std.mem.eql(u8, arg, "--port")) {
-                    return ServerArgs{
-                        .port = try std.fmt.parseInt(u16, args[index + 1], 10),
-                    };
+                    if (index == args.len - 1) return error.ExpectedFollowUp;
+                    server_args.port = try std.fmt.parseInt(u16, args[index + 1], 10);
+                    init_tracker |= 1;
+                } else if (std.mem.eql(u8, arg, "--board-dir")) {
+                    if (index == args.len - 1) return error.ExpectedFollowUp;
+                    server_args.board_dir = args[index + 1];
+                    init_tracker |= 2;
                 }
             }
+
+            if (init_tracker == 1 or init_tracker == 3) return server_args;
 
             return error.MissingArg;
         }
