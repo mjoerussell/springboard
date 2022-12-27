@@ -14,6 +14,8 @@ const Response = @import("../http/Response.zig");
 
 const log = std.log.scoped(.server);
 
+// @todo When running in server mode, a boards directory should be created if it doesn't already exist.
+
 // This key pair is defined by the spec to be used to sign a test board. Boards should not be allowed to be uploaded
 // using this key.
 const test_public_key_hex = "ab589f4dde9fce4180fcf42c7b05185b0a02a5d682e353fa39177995083e0583";

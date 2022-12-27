@@ -3,6 +3,9 @@ const Timestamp = @import("./Timestamp.zig");
 const KeyPair = @import("./KeyPair.zig");
 const Ed25519 = std.crypto.sign.Ed25519;
 
+// @todo It might be useful to provide an init function that doesn't validate the board content
+//       For example, we might want to use the Board struct to add a timestamp to a board, or to detect errors progressively
+
 pub const InvalidBoardError = error{
     TooLarge,
     InvalidTimestamp,

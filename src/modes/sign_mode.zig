@@ -7,6 +7,8 @@ const KeyPair = @import("../KeyPair.zig");
 const Board = @import("../Board.zig");
 const Timestamp = @import("../Timestamp.zig");
 
+// @todo Let the user specify their keypair from the command line
+
 pub fn run(allocator: Allocator, sign_args: Args.SignArgs) !void {
     const cwd = std.fs.cwd();
 

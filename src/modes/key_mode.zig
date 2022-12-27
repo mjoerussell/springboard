@@ -1,6 +1,9 @@
 const std = @import("std");
 const KeyPair = @import("../KeyPair.zig");
 
+// @todo Allow the user to continue generating keys if the first one that's generated isn't to their liking
+// @todo Let the user choose to write the key to a file if they want (will help integrate with sign mode)
+
 pub fn run() !void {
     var key_pair = try KeyPair.generate(8);
 
