@@ -4,7 +4,9 @@ const os = std.os;
 const net = std.net;
 const windows = std.os.windows;
 const winsock = @import("./winsock.zig");
-const http = @import("tortie").http;
+
+const Request = @import("./http/Request.zig");
+const Response = @import("./http/Response.zig");
 
 // @todo Better async handling. Right now there's no way to create a sequence of async events on a single client.
 //       The read and write parts much each be one-shot operations.
@@ -21,14 +23,14 @@ pub const Client = switch (builtin.os.tag) {
     else => @compileError("Platform not supported"),
 };
 
-
 pub const WindowsClient = struct {
     socket: os.socket_t,
     buffer: [4096]u8 = undefined,
     len: usize = 0,
-    request: http.Request,
-    response: http.Response,
+    request: Request,
+    response: Response.FixedBufferWriter,
     is_reading: bool = true,
+  
     overlapped: windows.OVERLAPPED = .{
         .Internal = 0,
         .InternalHigh = 0,
@@ -42,8 +44,6 @@ pub const WindowsClient = struct {
     },
 
     pub fn deinit(client: *WindowsClient) void {
-        client.request.deinit();
-        client.response.deinit();
         // Shutdown the socket before closing it to ensure that nobody is currently using the socket
         switch (os.windows.ws2_32.shutdown(client.socket, 1)) {
             0 => {

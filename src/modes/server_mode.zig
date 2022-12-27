@@ -1,5 +1,4 @@
 const std = @import("std");
-const Allocator = std.mem.Allocator;
 const Ed25519 = std.crypto.sign.Ed25519;
 
 const server_lib = @import("../server.zig");
@@ -10,7 +9,8 @@ const KeyPair = @import("../KeyPair.zig");
 const Board = @import("../Board.zig");
 const Timestamp = @import("../Timestamp.zig");
 
-const http = @import("tortie").http;
+const Request = @import("../http/Request.zig");
+const Response = @import("../http/Response.zig");
 
 const log = std.log.scoped(.server);
 
@@ -19,10 +19,12 @@ const log = std.log.scoped(.server);
 const test_public_key_hex = "ab589f4dde9fce4180fcf42c7b05185b0a02a5d682e353fa39177995083e0583";
 const test_secret_key = KeyPair.secretKeyFromHexString("3371f8b011f51632fea33ed0a3688c26a45498205c6097c352bd4d079d224419" ++ test_public_key_hex) catch unreachable;
 
-pub fn run(allocator: Allocator, port: u16) !void {
+pub fn run(port: u16) !void {
     var localhost = try std.net.Address.parseIp("0.0.0.0", port);
 
     var server = try Server.init(localhost);
+
+    log.info("Listening on port {}", .{port});
 
     while (true) {
         if (server.accept()) |client| {
@@ -39,21 +41,20 @@ pub fn run(allocator: Allocator, port: u16) !void {
         if (maybe_client) |client| {
             if (client.is_reading) {
                 var fbs = std.io.fixedBufferStream(&client.buffer);
+                client.response = Response.writer(fbs.writer());
                 
-                client.response = http.Response.init(allocator) catch {
-                    fbs.writer().writeAll("HTTP/1.1 500 Internal Server Error\r\n\r\n") catch continue;
-                    client.send() catch {};
-                    continue;
+                client.request = Request{ .data = client.buffer[0..client.len] };
+                handleIncomingRequest(client) catch |err| {
+                    log.debug("Error handling incoming message: {}\n", .{err});
+                    const status: Response.ResponseStatus = switch (err) {
+                        Request.GeneralError.ParseError => .bad_request,
+                        else => .internal_server_error,
+                    };
+
+                    client.response.writeStatus(status) catch {};
                 };
 
-                if (http.Request.parse(allocator, client.buffer[0..client.len])) |request| {
-                    client.request = request;
-                    handleIncomingRequest(client) catch |err| {
-                        log.debug("Error handling incoming message: {}\n", .{err});
-                    };
-                } else |_| {}
-
-                client.response.write(fbs.writer()) catch continue;
+                client.response.complete() catch {};
                 client.len = fbs.pos;
                 client.send() catch {};
             } else {
@@ -65,25 +66,28 @@ pub fn run(allocator: Allocator, port: u16) !void {
 }
 
 fn handleIncomingRequest(client: *Client) !void {
-    switch (client.request.method) {
+    const method = try client.request.getMethod();
+    const path = try client.request.getPath(); 
+
+    switch (method) {
         .get => {
-            if (std.mem.eql(u8, client.request.uri, "/")) {
+            if (std.mem.eql(u8, path, "/")) {
                 return try handleGetIndex(client);
             }
 
             // getting a board
-            return try handleGetBoard(client);
+            return try handleGetBoard(client, path);
         },
-        .put => return try handlePutBoard(client),
+        .put => return try handlePutBoard(client, path),
         .options => {
-            client.response.status = .no_content;
-            try client.response.addHeader("Access-Control-Allow-Methods", "GET, OPTIONS, PUT");
-            try client.response.addHeader("Access-Control-Allow-Origin", "*");
-            try client.response.addHeader("Access-Control-Allow-Headers", "Content-Type, If-Modified-Since, Spring-Signature, Spring-Version");
-            try client.response.addHeader("Access-Control-Expose-Headers", "Content-Type, Last-Modified, Spring-Signature, Spring-Version");
+            try client.response.writeStatus(.no_content);
+            try client.response.writeHeader("Access-Control-Allow-Methods", "GET, OPTIONS, PUT");
+            try client.response.writeHeader("Access-Control-Allow-Origin", "*");
+            try client.response.writeHeader("Access-Control-Allow-Headers", "Content-Type, If-Modified-Since, Spring-Signature, Spring-Version");
+            try client.response.writeHeader("Access-Control-Expose-Headers", "Content-Type, Last-Modified, Spring-Signature, Spring-Version");
         },
         else => {
-            client.response.status = .method_not_allowed;
+            try client.response.writeStatus(.method_not_allowed);
         }
     }
 }
@@ -94,18 +98,19 @@ fn handleGetIndex(client: *Client) !void {
     var index_file = try cwd.openFile("static/index.html", .{});
     defer index_file.close();
 
-    try client.response.addHeader("Content-Type", "text/html");
+    try client.response.writeStatus(.ok);
+    try client.response.writeHeader("Content-Type", "text/html");
     
     var index_buffer: [2048]u8 = undefined;
     const index_len = try index_file.readAll(&index_buffer);
-    client.response.body = index_buffer[0..index_len];
+    try client.response.writeBody(index_buffer[0..index_len]);
 }
 
 /// GET /{key}. Tries to return the board uploaded under the specified key, if it exists.
-fn handleGetBoard(client: *Client) !void {
+fn handleGetBoard(client: *Client, path: []const u8) !void {
     // @todo Validate the board signature here, so that the client doesn't have to do it.
     // Return some kind of error code in case the signature doesn't match the board content. 
-    const public_key = client.request.uri[1..];
+    const public_key = path[1..];
     const cwd = std.fs.cwd();
 
     if (std.mem.eql(u8, public_key, test_public_key_hex)) {
@@ -116,7 +121,7 @@ fn handleGetBoard(client: *Client) !void {
     var board_file = cwd.openFile(&board_path_buf, .{}) catch |err| switch (err) {
         error.FileNotFound => {
             log.warn("Tried to get non-existant board", .{});
-            client.response.status = .not_found;
+            try client.response.writeStatus(.not_found);
             return;
         },
         else => return err,
@@ -132,26 +137,26 @@ fn handleGetBoard(client: *Client) !void {
             else => std.log.warn("Unexpected error when reading board signature. Err = {} | Board = {s}", .{err, public_key}),
         }
 
-        client.response.status = .not_found;
+        try client.response.writeStatus(.not_found);
         return;
     };
     
     var board_buf: [Board.board_size]u8 = undefined;
     const board_len = board_reader.readAll(&board_buf) catch |err| {
         log.warn("Error reading board content: {} | Board = {s}", .{err, public_key});
-        client.response.status = .internal_server_error;
+        try client.response.writeStatus(.internal_server_error);
         return;
     };
 
     const board = Board.init(board_buf[0..board_len]) catch |err| {
         log.warn("Tried loading an invalid board: Err = {} | Board = {s}", .{err, public_key});
-        client.response.status = .not_found;
+        try client.response.writeStatus(.not_found);
         return;
     };
 
     // Check if the board is newer than the 'If-Modified-Since' header, if the header was provided by
     // the client.
-    if (client.request.headers.getFirstValue("If-Modified-Since")) |if_modified| {
+    if (client.request.findHeader("If-Modified-Since")) |if_modified| {
         // Parse the header value. If the provided value is not a valid timestamp, just abort
         // this check and pretend the header wasn't provided at all.
         if (Timestamp.parse(if_modified)) |last_modified_ts| {
@@ -160,17 +165,18 @@ fn handleGetBoard(client: *Client) !void {
             const board_ts = board.getTimestamp() catch unreachable;
             if (board_ts.compare(last_modified_ts) <= 0) {
                 // Board is older than if-modified-since, so the server should respond with 304
-                client.response.status = .not_modified;
+                try client.response.writeStatus(.not_modified);
                 return;
             }
         } else |_| {}
     }
 
-    try client.response.addHeader("Content-Type", "text/html;charset=utf-8");
-    try client.response.addHeader("Spring-Version", "83");
-    try client.response.addHeader("Spring-Signature", signature);
-    try client.response.addHeader("Content-Length", board_len);
-    client.response.body = board_buf[0..board_len];
+    try client.response.writeStatus(.ok);
+    try client.response.writeHeader("Content-Type", "text/html;charset=utf-8");
+    try client.response.writeHeader("Spring-Version", "83");
+    try client.response.writeHeader("Spring-Signature", signature);
+    try client.response.writeHeader("Content-Length", board_len);
+    try client.response.writeBody(board_buf[0..board_len]);
 }
 
 fn createAndSendTestBoard(client: *Client) !void {
@@ -186,69 +192,71 @@ fn createAndSendTestBoard(client: *Client) !void {
     var sig_hex_buf: [128]u8 = undefined;
     const sig_hex = try std.fmt.bufPrint(&sig_hex_buf, "{}", .{std.fmt.fmtSliceHexLower(&signature.toBytes())});
 
-    try client.response.addHeader("Content-Type", "text/html;charset=utf-8");
-    try client.response.addHeader("Spring-Version", "83");
-    try client.response.addHeader("Spring-Signature", sig_hex);
-    try client.response.addHeader("Content-Length", board_content.len);
-    client.response.body = board_content;
+    try client.response.writeStatus(.ok);
+    try client.response.writeHeader("Content-Type", "text/html;charset=utf-8");
+    try client.response.writeHeader("Spring-Version", "83");
+    try client.response.writeHeader("Spring-Signature", sig_hex);
+    try client.response.writeHeader("Content-Length", board_content.len);
+    try client.response.writeBody(board_content);
 }
 
 /// PUT /{key}. Upload or replace a board under the given key. The request must include the board's signature,
 /// and the signature must match the given key.
-fn handlePutBoard(client: *Client) !void {
+fn handlePutBoard(client: *Client, path: []const u8) !void {
     const cwd = std.fs.cwd();
-    const public_key = client.request.uri[1..];
+    const public_key = path[1..];
 
     // Parse + validate the key part of the request path.
-    var pub_key = getPublicKeyFromUri(client.request.uri) catch {
+    var pub_key = getPublicKeyFromUri(path) catch {
         log.warn("Invalid public key", .{});
-        client.response.status = .forbidden;
+        try client.response.writeStatus(.forbidden);
         return;
     };
     
     // Make sure that the key hasn't been added to the denylist.
     if (try denylistContainsKey("denylist.txt", public_key)) {
         log.warn("Key belongs to denylist, board upload is forbidden", .{});
-        client.response.status = .forbidden;
+        try client.response.writeStatus(.forbidden);
         return;
     }
     
     // Make sure that the user actually sent a board in the request body
-    if (client.request.body == null) {
+    const body = client.request.getBody();
+    if (body.len == 0) {
         log.warn("No body sent in request", .{});
-        client.response.status = .bad_request;
+        try client.response.writeStatus(.bad_request);
         return;
     }
 
     // Make sure that a signature was provided and, if so, that it is the valid signature
     // for the board as given.
-    const signature = client.request.headers.getFirstValue("Spring-Signature") orelse {
+    const signature = client.request.findHeader("Spring-Signature") orelse {
         log.warn("No board signature provided", .{});
-        client.response.status = .bad_request;
+        try client.response.writeStatus(.bad_request);
         return;
     };
 
     // Validate the new board. If there are any validation errors then abort the upload and return
     // the proper status code.
-    const board = validateIncomingBoard(client.request.body.?, signature, pub_key) catch |err| switch (err) {
+    const board = validateIncomingBoard(body, signature, pub_key) catch |err| switch (err) {
         error.TooLarge => {
             log.warn("Client tried to upload jumbo board", .{});
-            client.response.status = .payload_too_large;
+            try client.response.writeStatus(.payload_too_large);
             return;
         },
         error.InvalidPublicKey, error.InvalidTimestamp => {
             log.warn("Board timestamp was invalid", .{});
-            client.response.status = .bad_request;
+            try client.response.writeStatus(.bad_request);
             return;
         },
         error.InvalidSignature => {
             log.warn("Board signature was invalid", .{});
-            client.response.status = .forbidden;
+            try client.response.writeStatus(.forbidden);
             return;
         },
         error.OutdatedTimestamp => {
             log.warn("Board already exists and existing timestamp is newer", .{});
-            client.response.status = .conflict;
+            try client.response.writeStatus(.conflict);
             return;
         },
     };
@@ -263,7 +271,7 @@ fn handlePutBoard(client: *Client) !void {
     try board_writer.print("{s}\n", .{signature});
     try board_writer.writeAll(board.content[0..board.len]);
     
-    client.response.status = .created;
+    try client.response.writeStatus(.created);
 }
 
 /// Given a URI like '/{key}', where 'key' is a hex string representing a public key,

@@ -1,7 +1,6 @@
 const std = @import("std");
-const tortie = @import("tortie/build.zig");
 
-const test_files = [_][]const u8{"src/KeyPair.zig", "src/Timestamp.zig", "src/Board.zig"};
+const test_files = [_][]const u8{"src/KeyPair.zig", "src/Timestamp.zig", "src/Board.zig", "src/http/Response.zig", "src/http/Request.zig"};
 
 pub fn build(b: *std.build.Builder) !void {
     // Standard target options allows the person running `zig build` to choose
@@ -19,8 +18,6 @@ pub fn build(b: *std.build.Builder) !void {
     exe.setBuildMode(mode);
     exe.install();
 
-    try tortie.link(exe, b.allocator, "tortie");
-
     const run_cmd = exe.run();
     run_cmd.step.dependOn(b.getInstallStep());
     if (b.args) |args| {
@@ -37,10 +34,4 @@ pub fn build(b: *std.build.Builder) !void {
         tests.setBuildMode(mode);
         test_step.dependOn(&tests.step);
     }
-
-    // const exe_tests = b.addTest("src/main.zig");
-    // exe_tests.setTarget(target);
-    // exe_tests.setBuildMode(mode);
-
-    // test_step.dependOn(&exe_tests.step);
 }
