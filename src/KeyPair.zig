@@ -148,7 +148,6 @@ fn tryGenerate(current_date: KeyMonthYear) ?Ed25519.KeyPair {
     if (hasMagicIdentifier(key_pair.public_key.toBytes())) {
         // Try to get a valid year from the public key
         const key_month_year = KeyMonthYear.fromKey(key_pair.public_key.toBytes()) catch return null;
-        std.log.debug("Found key that expires on {}/{}", .{ key_month_year.month, key_month_year.year });
         if (key_month_year.checkExpirationDate(current_date)) {
             return key_pair;
         }
