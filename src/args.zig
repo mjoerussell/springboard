@@ -13,7 +13,6 @@ pub const Args = union(enum) {
     // push: PushArgs,
 
     pub const ServerArgs = struct {
-        // @todo Allow the user to specify the directory to use to store boards 
         // @todo Allow the user to specify the board TTL
         port: u16,
         board_dir: []const u8 = "boards",
