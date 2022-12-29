@@ -14,6 +14,9 @@ const Timestamp = @import("../Timestamp.zig");
 const Request = @import("../http/Request.zig");
 const Response = @import("../http/Response.zig");
 
+// @fixme Enforce board TTL. Currently boards live forever, but according to the spec they should have a TTL of somewhere between 7 and 22 days.
+//       https://github.com/robinsloan/spring-83/blob/main/draft-20220629.md#boards-on-the-server
+
 const log = std.log.scoped(.server);
 
 // This key pair is defined by the spec to be used to sign a test board. Boards should not be allowed to be uploaded
@@ -56,7 +59,7 @@ pub fn run(args: Args.ServerArgs) !void {
             if (client.is_reading) {
                 var fbs = std.io.fixedBufferStream(&client.buffer);
                 client.response = Response.writer(fbs.writer());
-                
+
                 client.request = Request{ .data = client.buffer[0..client.len] };
                 handleIncomingRequest(client, args.board_dir) catch |err| {
                     log.debug("Error handling incoming message: {}\n", .{err});
@@ -123,7 +126,7 @@ fn handleGetIndex(client: *Client) !void {
 /// GET /{key}. Tries to return the board uploaded under the specified key, if it exists.
 fn handleGetBoard(client: *Client, path: []const u8, board_directory: []const u8) !void {
     // @todo Validate the board signature here, so that the client doesn't have to do it.
-    // Return some kind of error code in case the signature doesn't match the board content. 
+    //       Return some kind of error code in case the signature doesn't match the board content. 
     const public_key = path[1..];
 
     if (std.mem.eql(u8, public_key, test_public_key_hex)) {

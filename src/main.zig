@@ -15,6 +15,7 @@ const Args = @import("args.zig").Args;
 const key_mode = @import("modes/key_mode.zig");
 const sign_mode = @import("modes/sign_mode.zig");
 const server_mode = @import("modes/server_mode.zig");
+const push_mode = @import("modes/push_mode.zig");
 
 pub const log_level = .debug;
 
@@ -41,5 +42,6 @@ pub fn main() anyerror!void {
         .server => |server_args| try server_mode.run(server_args),
         .key => try key_mode.run(),
         .sign => |sign_args| try sign_mode.run(allocator, sign_args),
+        .push => |push_args| try push_mode.run(allocator, push_args),
     }
 }

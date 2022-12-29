@@ -1,16 +1,19 @@
 const std = @import("std");
 
-// @todo Push mode. In this mode, springboard should allow a user to validate & upload a board to a Spring server
 // @todo Validate mode. This mode should validate an input board and explain to the user what is wrong with it, if anything, in
 //       easy-to-understand language.
 // @todo Client mode. In this mode, springboard should act like a headless client, retrieving & validating boards from other
 //       spring83 servers.
 
 pub const Args = union(enum) {
+    // @todo Standardize arg parsing, use some kind of comptime mechanism to automatically generate parse code for arguments
+    //       based on the argument structure. This feature should support things like string vs. int args, optional args, and default
+    //       values.
+    // @todo Help text
     server: ServerArgs,
     key: KeyArgs,
     sign: SignArgs,
-    // push: PushArgs,
+    push: PushArgs,
 
     pub const ServerArgs = struct {
         // @todo Allow the user to specify the board TTL
@@ -73,14 +76,41 @@ pub const Args = union(enum) {
         }
     };
 
-    // pub const PushArgs = struct {
-    //     .server_path: []const u8,
-    //     .board: []const u8,
+    pub const PushArgs = struct {
+        // @todo Parse port from server arg
+        // @todo Allow user to specify a sub-path in the server arg to push boards to
+        server: []const u8,
+        port: u16,
+        board: []const u8,
+        key_file: []const u8,
 
-    //     pub fn init(args: [][]const u8) !PushArgs {
-            
-    //     }
-    // }
+        pub fn init(args: [][]const u8) !PushArgs {
+            var push_args: PushArgs = undefined;
+            var init_tracker: u32 = 0;
+            for (args) |arg, index| {
+                if (std.mem.eql(u8, arg, "--board")) {
+                    if (index == args.len - 1) return error.ExpectedFollowUp;
+                    push_args.board = args[index + 1];
+                    init_tracker |= 1;
+                } else if (std.mem.eql(u8, arg, "--server")) {
+                    if (index == args.len - 1) return error.ExpectedFollowUp;
+                    push_args.server = args[index + 1];
+                    init_tracker |= 2;
+                } else if (std.mem.eql(u8, arg, "--port")) {
+                    if (index == args.len - 1) return error.ExpectedFollowUp;
+                    push_args.port = try std.fmt.parseInt(u16, args[index + 1], 10);
+                    init_tracker |= 4;
+                } else if (std.mem.eql(u8, arg, "--key-file")) {
+                    if (index == args.len - 1) return error.ExpectedFollowUp;
+                    push_args.key_file = args[index + 1];
+                    init_tracker |= 8;
+                }
+            }
+
+            if (init_tracker != 15) return error.MissingArg;
+            return push_args;
+        }
+    };
 
     pub fn init(args: [][]const u8) !Args {
         if (args.len < 2) return error.NoArgs;
