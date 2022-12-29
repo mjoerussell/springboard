@@ -12,6 +12,22 @@ Spring83 is a client/server protocol. Springboard, in its current form, is an im
 
 In addition to a server implementation, Springboard comes with a few helpful tools for working with Spring83 boards.
 
+## Installation
+
+Springboard is built with the Zig programming language, and requires a Zig compiler from [master](https://github.com/ziglang/zig) to be built. Springboard can be built with one simple command:
+
+```bash
+$ zig build
+```
+
+This will build Springboard in Debug mode. If you are planning on using Springboard to generate a new key, it's recommended to build it in Release-Fast mode, like this:
+
+```bash
+$ zig build -Drelease-fast
+```
+
+This will speed up the key generation process by a very significant degree.
+
 ## Key Mode
 
 Before one can post a board to a Spring83 server they must generate a public/private key pair. This key pair will be used to sign the content of the board before it is uploaded. The public part is also used to identify boards.
