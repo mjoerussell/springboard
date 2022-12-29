@@ -2,7 +2,7 @@ const std = @import("std");
 const os = std.os;
 const windows = os.windows;
 
-pub const OverlappedError = error {
+pub const OverlappedError = error{
     NotInitialized,
     NetworkDown,
     NotASocket,
@@ -13,7 +13,7 @@ pub const OverlappedError = error {
     GeneralError,
 };
 
-pub const RecvError = error {
+pub const RecvError = error{
     IoPending,
     WouldBlock,
     ConnectionReset,
@@ -23,11 +23,11 @@ pub const RecvError = error {
     NetworkReset,
     NotConnected,
     TimedOut,
-    OperationAborted, 
+    OperationAborted,
     GeneralError,
 } || OverlappedError;
 
-pub const SendError = error {
+pub const SendError = error{
     IoPending,
     WouldBlock,
     ConnectionReset,
@@ -37,7 +37,7 @@ pub const SendError = error {
     NetworkReset,
     NotConnected,
     TimedOut,
-    OperationAborted, 
+    OperationAborted,
     GeneralError,
 } || OverlappedError;
 
@@ -70,7 +70,7 @@ pub fn wsaRecv(socket: os.socket_t, buffer: []u8, overlapped: *windows.OVERLAPPE
         .WSAENETRESET => error.NetworkReset,
         .WSAENOTCONN => error.NotConnected,
         .WSAETIMEDOUT => error.TimedOut,
-        .WSA_OPERATION_ABORTED => error.OperationAborted, 
+        .WSA_OPERATION_ABORTED => error.OperationAborted,
         else => error.GeneralError,
     };
 }
@@ -103,7 +103,7 @@ pub fn wsaSend(socket: os.socket_t, buffer: []const u8, overlapped: *windows.OVE
         .WSAENETRESET => error.NetworkReset,
         .WSAENOTCONN => error.NotConnected,
         .WSAETIMEDOUT => error.TimedOut,
-        .WSA_OPERATION_ABORTED => error.OperationAborted, 
+        .WSA_OPERATION_ABORTED => error.OperationAborted,
         else => error.GeneralError,
     };
 }
@@ -130,20 +130,14 @@ pub fn wsaGetOverlappedResult(socket: os.socket_t, overlapped: *windows.OVERLAPP
 
 pub fn getQueuedCompletionStatus(completion_port: os.windows.HANDLE, completion_key: *os.windows.ULONG_PTR, lp_overlapped: *?*os.windows.OVERLAPPED, should_block: bool) !u32 {
     var bytes_transferred: u32 = 0;
-    const result = os.windows.kernel32.GetQueuedCompletionStatus(
-        completion_port, 
-        &bytes_transferred, 
-        completion_key, 
-        lp_overlapped, 
-        if (should_block) windows.INFINITE else 0
-    );
+    const result = os.windows.kernel32.GetQueuedCompletionStatus(completion_port, &bytes_transferred, completion_key, lp_overlapped, if (should_block) windows.INFINITE else 0);
 
     if (result == os.windows.TRUE) {
         return bytes_transferred;
     }
 
     if (lp_overlapped.* == null) return error.WouldBlock;
-    
+
     return switch (os.windows.kernel32.GetLastError()) {
         .NETNAME_DELETED => error.ConnectionReset,
         .CONNECTION_ABORTED => error.ConnectionAborted,

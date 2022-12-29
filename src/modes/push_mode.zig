@@ -13,7 +13,7 @@ const Response = @import("../http/Response.zig");
 //        to their board. This might feel redundant because push mode will _also_ sign their board, and there's no way to specify your own
 //        signature. I think the easiest solution would be to allow users to ask push mode to append a timestamp as well.
 
-/// Push mode allows a user to automatically push their board to their desired server. In addition to specifying a board to upload and 
+/// Push mode allows a user to automatically push their board to their desired server. In addition to specifying a board to upload and
 /// a server to upload to, the user also specifies their key file (easily generated with key mode). Springboard will use the key to sign
 /// the board and to create the PUT request path.
 pub fn run(in_allocator: Allocator, push_args: Args.PushArgs) !void {
@@ -21,7 +21,7 @@ pub fn run(in_allocator: Allocator, push_args: Args.PushArgs) !void {
     defer arena.deinit();
 
     const allocator = arena.allocator();
-    
+
     const cwd = std.fs.cwd();
 
     var secret_key_hex = try cwd.readFileAlloc(allocator, push_args.key_file, 128);
@@ -37,7 +37,7 @@ pub fn run(in_allocator: Allocator, push_args: Args.PushArgs) !void {
     _ = try Board.init(board_content);
 
     var signature = try key_pair.sign(board_content, null);
-    
+
     _ = try std.os.windows.WSAStartup(2, 2);
     var server_connection = try net.tcpConnectToHost(allocator, push_args.server, push_args.port);
     defer server_connection.close();
@@ -56,8 +56,8 @@ pub fn run(in_allocator: Allocator, push_args: Args.PushArgs) !void {
 
     try server_connection.writer().writeAll(request_buffer.items);
 
-    var response_content = try server_connection.reader().readAllAlloc(allocator, 1024); 
-    
+    var response_content = try server_connection.reader().readAllAlloc(allocator, 1024);
+
     // @todo Parse response and show helpful messages
     try std.io.getStdOut().writer().writeAll(response_content);
 }

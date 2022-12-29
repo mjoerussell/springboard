@@ -1,6 +1,6 @@
 const std = @import("std");
 
-const test_files = [_][]const u8{"src/KeyPair.zig", "src/Timestamp.zig", "src/Board.zig", "src/http/Response.zig", "src/http/Request.zig"};
+const test_files = [_][]const u8{ "src/KeyPair.zig", "src/Timestamp.zig", "src/Board.zig", "src/http/Response.zig", "src/http/Request.zig" };
 
 pub fn build(b: *std.build.Builder) !void {
     // Standard target options allows the person running `zig build` to choose

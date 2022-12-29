@@ -18,11 +18,11 @@ pub fn run(allocator: Allocator, sign_args: Args.SignArgs) !void {
     const secret_key_len = Ed25519.SecretKey.encoded_length;
     const ascii_len = secret_key_len * 2;
 
-    var key_bytes_ascii: [ascii_len]u8 = undefined; 
+    var key_bytes_ascii: [ascii_len]u8 = undefined;
     _ = try key_file.read(&key_bytes_ascii);
 
     var key = try Ed25519.KeyPair.fromSecretKey(try KeyPair.secretKeyFromHexString(&key_bytes_ascii));
-    
+
     var board_buffer = try std.ArrayList(u8).initCapacity(allocator, Board.board_size);
     defer board_buffer.deinit();
 

@@ -5,6 +5,7 @@ const Ed25519 = std.crypto.sign.Ed25519;
 
 // @todo It might be useful to provide an init function that doesn't validate the board content
 //       For example, we might want to use the Board struct to add a timestamp to a board, or to detect errors progressively
+//       For other use-cases, see the note below about using a custom TTL when validating the board
 
 pub const InvalidBoardError = error{
     TooLarge,
@@ -33,7 +34,7 @@ pub fn init(content: []const u8) InvalidBoardError!Board {
 
 pub fn verifySignature(board: Board, signature: []const u8, public_key: Ed25519.PublicKey) error{InvalidSignature}!void {
     const sig = KeyPair.signatureFromHexString(signature) catch return error.InvalidSignature;
-    // Try to validate the signature of the board being uploaded. 
+    // Try to validate the signature of the board being uploaded.
     sig.verify(board.content[0..board.len], public_key) catch return error.InvalidSignature;
 }
 
@@ -41,7 +42,7 @@ pub fn getTimestamp(board: Board) error{InvalidTimestamp}!Timestamp {
     const time_prefix = "<time datetime=\"";
     const time_prefix_index = std.mem.indexOf(u8, &board.content, time_prefix) orelse return error.InvalidTimestamp;
     const time_index = time_prefix_index + time_prefix.len;
-    const timestamp_string = board.content[time_index..time_index + 20];
+    const timestamp_string = board.content[time_index .. time_index + 20];
 
     return Timestamp.parse(timestamp_string) catch return error.InvalidTimestamp;
 }
@@ -50,7 +51,8 @@ fn validateTimestamp(board: Board) error{InvalidTimestamp}!void {
     const timestamp = try board.getTimestamp();
     const now_timestamp = Timestamp.now();
     if (timestamp.compare(now_timestamp) > 0) return error.InvalidTimestamp;
-    
+
+    // @note We are basically enforcing a TTL here, but it would be nice to be able to customize it.
     const max_past_timestamp = timestamp.addOrSubtractDays(-22);
     if (timestamp.compare(max_past_timestamp) < 0) return error.InvalidTimestamp;
 }

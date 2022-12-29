@@ -14,9 +14,6 @@ const Timestamp = @import("../Timestamp.zig");
 const Request = @import("../http/Request.zig");
 const Response = @import("../http/Response.zig");
 
-// @fixme Enforce board TTL. Currently boards live forever, but according to the spec they should have a TTL of somewhere between 7 and 22 days.
-//       https://github.com/robinsloan/spring-83/blob/main/draft-20220629.md#boards-on-the-server
-
 const log = std.log.scoped(.server);
 
 // This key pair is defined by the spec to be used to sign a test board. Boards should not be allowed to be uploaded
@@ -35,7 +32,7 @@ pub fn run(args: Args.ServerArgs) !void {
             log.info("Note: Tried to create board directory at \"{s}\", but the directory already exists.", .{args.board_dir});
         },
         else => {
-            log.err("Fatal error: Could not create the board directory at \"{s}\" - {}", .{args.board_dir, err});
+            log.err("Fatal error: Could not create the board directory at \"{s}\" - {}", .{ args.board_dir, err });
             return err;
         },
     };
@@ -81,14 +78,14 @@ pub fn run(args: Args.ServerArgs) !void {
             .writing => client.deinit(),
             .idle => {
                 std.log.err("Got idle client from getCompletion(), which probably shouldn't ever happen. Nothing to do right now...", .{});
-            }
+            },
         }
     }
 }
 
 fn handleIncomingRequest(client: *Client, board_directory: []const u8) !void {
     const method = try client.request.getMethod();
-    const path = try client.request.getPath(); 
+    const path = try client.request.getPath();
 
     switch (method) {
         .get => {
@@ -110,7 +107,7 @@ fn handleIncomingRequest(client: *Client, board_directory: []const u8) !void {
         },
         else => {
             try client.response.writeStatus(.method_not_allowed);
-        }
+        },
     }
 }
 
@@ -122,7 +119,7 @@ fn handleGetIndex(client: *Client) !void {
 
     try client.response.writeStatus(.ok);
     try client.response.writeHeader("Content-Type", "text/html");
-    
+
     var index_buffer: [2048]u8 = undefined;
     const index_len = try index_file.readAll(&index_buffer);
     try client.response.writeBody(index_buffer[0..index_len]);
@@ -131,7 +128,7 @@ fn handleGetIndex(client: *Client) !void {
 /// GET /{key}. Tries to return the board uploaded under the specified key, if it exists.
 fn handleGetBoard(client: *Client, path: []const u8, board_directory: []const u8) !void {
     // @todo Validate the board signature here, so that the client doesn't have to do it.
-    //       Return some kind of error code in case the signature doesn't match the board content. 
+    //       Return some kind of error code in case the signature doesn't match the board content.
     const public_key = path[1..];
 
     if (std.mem.eql(u8, public_key, test_public_key_hex)) {
@@ -156,22 +153,22 @@ fn handleGetBoard(client: *Client, path: []const u8, board_directory: []const u8
         switch (err) {
             error.EndOfStream => std.log.warn("Board is corrupted - could not read entire signature. Board = {s}", .{public_key}),
             error.StreamTooLong => std.log.warn("Board is corrupted - signature value is too long, or is not properly terminated. Board = {s}", .{public_key}),
-            else => std.log.warn("Unexpected error when reading board signature. Err = {} | Board = {s}", .{err, public_key}),
+            else => std.log.warn("Unexpected error when reading board signature. Err = {} | Board = {s}", .{ err, public_key }),
         }
 
         try client.response.writeStatus(.not_found);
         return;
     };
-    
+
     var board_buf: [Board.board_size]u8 = undefined;
     const board_len = board_reader.readAll(&board_buf) catch |err| {
-        log.warn("Error reading board content: {} | Board = {s}", .{err, public_key});
+        log.warn("Error reading board content: {} | Board = {s}", .{ err, public_key });
         try client.response.writeStatus(.internal_server_error);
         return;
     };
 
     const board = Board.init(board_buf[0..board_len]) catch |err| {
-        log.warn("Tried loading an invalid board: Err = {} | Board = {s}", .{err, public_key});
+        log.warn("Tried loading an invalid board: Err = {} | Board = {s}", .{ err, public_key });
         try client.response.writeStatus(.not_found);
         return;
     };
@@ -233,14 +230,14 @@ fn handlePutBoard(client: *Client, path: []const u8, board_directory: []const u8
         try client.response.writeStatus(.forbidden);
         return;
     };
-    
+
     // Make sure that the key hasn't been added to the denylist.
     if (try denylistContainsKey("denylist.txt", public_key)) {
         log.warn("Key belongs to denylist, board upload is forbidden", .{});
         try client.response.writeStatus(.forbidden);
         return;
     }
-    
+
     // Make sure that the user actually sent a board in the request body
     const body = client.request.getBody();
     if (body.len == 0) {
@@ -283,7 +280,7 @@ fn handlePutBoard(client: *Client, path: []const u8, board_directory: []const u8
     };
 
     log.info("Creating board at boards/{s}", .{public_key});
-    
+
     // const board_path_buf = getBoardPath("boards/", public_key);
     const cwd = std.fs.cwd();
     const board_dir = try cwd.openDir(board_directory, .{});
@@ -293,7 +290,7 @@ fn handlePutBoard(client: *Client, path: []const u8, board_directory: []const u8
     var board_writer = board_file.writer();
     try board_writer.print("{s}\n", .{signature});
     try board_writer.writeAll(board.content[0..board.len]);
-    
+
     try client.response.writeStatus(.created);
 }
 
@@ -336,7 +333,7 @@ fn validateIncomingBoard(board_content: []const u8, signature: []const u8, publi
         error.TooLarge => return BoardValidationError.TooLarge,
         error.InvalidTimestamp => return BoardValidationError.InvalidTimestamp,
     };
-    
+
     board.verifySignature(signature, public_key) catch return error.InvalidSignature;
 
     var board_path_buf: [200]u8 = undefined;
@@ -351,7 +348,7 @@ fn validateIncomingBoard(board_content: []const u8, signature: []const u8, publi
         // sure that the new board's timestamp comes _after_ the existing board's timestamp.
         var existing_board_buf: [Board.board_size]u8 = undefined;
         var existing_board_len = existing_board_file.readAll(&existing_board_buf) catch break :blk;
-        
+
         var existing_board = Board.init(existing_board_buf[0..existing_board_len]) catch {
             std.log.info("An error was found while validating an existing board. The board will be replaced.", .{});
             break :blk;
@@ -359,7 +356,7 @@ fn validateIncomingBoard(board_content: []const u8, signature: []const u8, publi
         // These can't fail because we've already validated the timestamp in Board.init()
         var existing_board_timestamp = existing_board.getTimestamp() catch unreachable;
         var new_board_timestamp = board.getTimestamp() catch unreachable;
-        
+
         // If this is true, then the existing board has a timestamp that is either the same or in
         // the future from the incoming board's timestamp, which is not allowed to happen.
         if (existing_board_timestamp.compare(new_board_timestamp) >= 0) {

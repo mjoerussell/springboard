@@ -24,16 +24,16 @@ pub fn run() !void {
         const public_key_bytes = key_pair.public_key.toBytes();
         const key_expiration_ts = KeyPair.KeyMonthYear.fromKey(public_key_bytes) catch continue;
 
-        try stdout_writer.print("Found a key that expires on {}/{}\n", .{key_expiration_ts.month, key_expiration_ts.year});
+        try stdout_writer.print("Found a key that expires on {}/{}\n", .{ key_expiration_ts.month, key_expiration_ts.year });
         try stdout_writer.writeAll("Use this key? (y/n): ");
 
         const input = try nextLine(stdin_reader, &input_buffer);
         if (std.ascii.eqlIgnoreCase(input, "y")) {
             const secret_key_bytes = key_pair.secret_key.toBytes();
             const fmt_secret_key = std.fmt.fmtSliceHexLower(&secret_key_bytes);
-    
+
             try stdout_writer.writeAll("Save this key to a file? Enter filename to create, or hit 'Enter' to print instead: ");
-    
+
             const filename = try nextLine(stdin_reader, &input_buffer);
             if (filename.len == 0) {
                 try stdout_writer.print("{}\n", .{fmt_secret_key});
@@ -51,7 +51,7 @@ pub fn run() !void {
 }
 
 fn nextLine(reader: anytype, buffer: []u8) ![]const u8 {
-    var maybe_line = try reader.readUntilDelimiterOrEof(buffer, '\n'); 
+    var maybe_line = try reader.readUntilDelimiterOrEof(buffer, '\n');
     if (maybe_line) |line| {
         if (@import("builtin").os.tag == .windows) {
             return std.mem.trimRight(u8, line, "\r");

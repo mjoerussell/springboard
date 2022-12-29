@@ -36,7 +36,7 @@ pub const WindowsClient = struct {
     buffer: [4096]u8 = undefined,
     len: usize = 0,
     state: ClientState = .idle,
-  
+
     overlapped: windows.OVERLAPPED = .{
         .Internal = 0,
         .InternalHigh = 0,
@@ -110,10 +110,9 @@ const WindowsServer = struct {
         const flags = os.windows.ws2_32.WSA_FLAG_OVERLAPPED | os.windows.ws2_32.WSA_FLAG_NO_HANDLE_INHERIT;
         const socket = try os.windows.WSASocketW(@intCast(i32, address.any.family), @as(i32, os.SOCK.STREAM), @as(i32, os.IPPROTO.TCP), null, 0, flags);
         errdefer |err| {
-            std.log.err("Error occurred while listening on address {}: {}", .{address, err});
+            std.log.err("Error occurred while listening on address {}: {}", .{ address, err });
             os.windows.closesocket(socket) catch unreachable;
         }
-
 
         var io_mode: u32 = 1;
         _ = os.windows.ws2_32.ioctlsocket(socket, os.windows.ws2_32.FIONBIO, &io_mode);
@@ -147,10 +146,10 @@ const WindowsServer = struct {
         } else {
             if (server.findIdleClient()) |client| {
                 _ = try windows.CreateIoCompletionPort(client_sock, server.io_port, undefined, 0);
-                client.* = WindowsClient{ 
+                client.* = WindowsClient{
                     .socket = client_sock,
                     .request = undefined,
-                    .response = undefined,  
+                    .response = undefined,
                 };
                 return client;
             }
@@ -178,5 +177,4 @@ const WindowsServer = struct {
         }
         return null;
     }
-
 };

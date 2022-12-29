@@ -70,7 +70,7 @@ pub const Args = union(enum) {
                     init_tracker |= 4;
                 }
             }
-            
+
             if (init_tracker == 7 or init_tracker == 3) return sign_args;
             return error.MissingArg;
         }

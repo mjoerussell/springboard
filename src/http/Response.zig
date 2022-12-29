@@ -146,16 +146,16 @@ pub fn Writer(comptime W: type) type {
         writer: W,
 
         pub fn writeStatus(self: Self, status: ResponseStatus) !void {
-            try self.writer.print("HTTP/1.1 {} {s}\r\n", .{@enumToInt(status), status.getMessage()});
+            try self.writer.print("HTTP/1.1 {} {s}\r\n", .{ @enumToInt(status), status.getMessage() });
         }
 
         pub fn writeHeader(self: Self, header_name: []const u8, header_value: anytype) !void {
-            const format_string = comptime if (std.meta.trait.isZigString(@TypeOf(header_value))) 
+            const format_string = comptime if (std.meta.trait.isZigString(@TypeOf(header_value)))
                 "{s}: {s}\r\n"
             else
                 "{s}: {}\r\n";
 
-            try self.writer.print(format_string, .{header_name, header_value});
+            try self.writer.print(format_string, .{ header_name, header_value });
         }
 
         pub fn writeBody(self: Self, body: []const u8) !void {
@@ -175,7 +175,7 @@ pub fn getStatus(response: Response) !ResponseStatus {
     for (response.data) |c, index| {
         if (c == ' ') {
             const status_end_index = std.mem.indexOfPos(u8, response.data, index + 1, " ") orelse return error.InvalidStatus;
-            const status_val = std.fmt.parseInt(u32, response.data[index + 1..status_end_index], 10) catch return error.InvalidStatus;
+            const status_val = std.fmt.parseInt(u32, response.data[index + 1 .. status_end_index], 10) catch return error.InvalidStatus;
             return std.meta.intToEnum(ResponseStatus, status_val) catch return error.InvalidStatus;
         }
     }
@@ -191,7 +191,7 @@ pub fn findHeader(response: Response, header_name: []const u8) ?[]const u8 {
         if (line.len == 0) return null;
         const header_name_end = std.mem.indexOf(u8, line, ":") orelse continue;
         if (std.ascii.eqlIgnoreCase(header_name, line[0..header_name_end])) {
-            return std.mem.trim(u8, line[header_name_end + 1..], " \r\n");
+            return std.mem.trim(u8, line[header_name_end + 1 ..], " \r\n");
         }
     }
 
@@ -211,7 +211,7 @@ pub fn getBody(response: Response) []const u8 {
         end_index -= 2;
     }
 
-    return response.data[index + 2..end_index];
+    return response.data[index + 2 .. end_index];
 }
 
 pub fn writer(inner_writer: anytype) Writer(@TypeOf(inner_writer)) {
@@ -243,5 +243,4 @@ test "get body content" {
 
     const body = response.getBody();
     try std.testing.expectEqualStrings("body\ntext", body);
-
 }

@@ -17,7 +17,7 @@ pub fn parse(timestamp_string: []const u8) ParseError!Timestamp {
 
     if (!std.mem.endsWith(u8, timestamp_string, "Z")) return error.InvalidTimestamp;
 
-    var parts = std.mem.split(u8, timestamp_string[0..timestamp_string.len - 1], "T");
+    var parts = std.mem.split(u8, timestamp_string[0 .. timestamp_string.len - 1], "T");
 
     // parse date
     var date = parts.next() orelse return error.InvalidTimestamp;
@@ -73,7 +73,7 @@ pub fn toEpochSeconds(timestamp: Timestamp) u64 {
     const leap_year_seconds = day_seconds * 366;
 
     var seconds: u64 = 0;
-    
+
     var year_to_check: u16 = 1970;
     while (year_to_check < timestamp.year) : (year_to_check += 1) {
         if (std.time.epoch.isLeapYear(year_to_check)) {
@@ -101,7 +101,7 @@ pub fn toEpochSeconds(timestamp: Timestamp) u64 {
 pub fn addOrSubtractDays(timestamp: Timestamp, days_to_change: i32) Timestamp {
     const seconds_in_day = 86400;
     const seconds_to_change = days_to_change * seconds_in_day;
-    const new_timestamp_seconds = if (seconds_to_change >= 0) 
+    const new_timestamp_seconds = if (seconds_to_change >= 0)
         timestamp.toEpochSeconds() + @intCast(u64, seconds_to_change)
     else
         timestamp.toEpochSeconds() -% @intCast(u64, -1 * seconds_to_change);
@@ -131,7 +131,7 @@ pub fn format(value: Timestamp, comptime fmt: []const u8, options: std.fmt.Forma
 }
 
 pub fn print(timestamp: Timestamp, writer: anytype) !void {
-    try writer.print("{d}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z", .{timestamp.year, timestamp.month, timestamp.day, timestamp.hour, timestamp.minute, timestamp.second});
+    try writer.print("{d}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z", .{ timestamp.year, timestamp.month, timestamp.day, timestamp.hour, timestamp.minute, timestamp.second });
 }
 
 fn setDate(timestamp: *Timestamp, year: []const u8, month: []const u8, day: []const u8) ParseError!void {
@@ -145,7 +145,7 @@ fn setDate(timestamp: *Timestamp, year: []const u8, month: []const u8, day: []co
         4, 6, 9, 11 => @as(u8, 30),
         1, 3, 5, 7, 8, 10, 12 => @as(u8, 31),
         2 => if (std.time.epoch.isLeapYear(timestamp.year)) @as(u8, 29) else @as(u8, 28),
-        else => return error.InvalidTimestamp, 
+        else => return error.InvalidTimestamp,
     };
 
     if (timestamp.day > max_days_in_month) return error.InvalidTimestamp;
@@ -170,7 +170,6 @@ fn testTime(timestamp: Timestamp, expected_hour: u8, expected_minute: u8, expect
     try std.testing.expectEqual(expected_minute, timestamp.minute);
     try std.testing.expectEqual(expected_second, timestamp.second);
 }
-
 
 test "gets timestamp from epoch seconds" {
     // This value was retrieved at 3:57:54 pm. CST, or 21:57:54 UTC on 2022-11-20
