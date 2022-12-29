@@ -88,7 +88,7 @@ pub const WindowsClient = struct {
 
 const WindowsServer = struct {
     socket: os.socket_t = undefined,
-    clients: [2]WindowsClient = undefined,
+    clients: [256]WindowsClient = undefined,
     client_count: usize = 0,
     listen_address: net.Address = undefined,
     io_port: os.windows.HANDLE,
