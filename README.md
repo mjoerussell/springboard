@@ -34,6 +34,14 @@ Springboard can sign boards using a pre-generated key pair. The process is strai
 
 Spring83 boards must contain a timestamp element in order to determine the board's validity. Springboard's `sign` function can append the current timestamp to the board, if desired, using the optional `--append-timestamp` flag.
 
+## Push Mode
+
+Springboard can push boards to a Spring83 server. All you need is a valid board and a file containing your secret key! Once you have these, you can push the board using this command:
+
+```bash
+$ springboard push --board <board file> --key-file <key file> --server <server domain> --port <server port>
+```
+
 ## Server Mode
 
 This mode runs a Spring83 server. The entire server spec API has been implemented at this time, though it's still in early stages of development and may not be stable.
