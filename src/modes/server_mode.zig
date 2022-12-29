@@ -47,39 +47,40 @@ pub fn run(args: Args.ServerArgs) !void {
         if (server.accept()) |client| {
             try client.recv();
         } else |err| {
+            // @fixme We should handle error.Busy more gracefully. The spec suggests that we return status code 429
+            //        https://github.com/robinsloan/spring-83/blob/main/draft-20220629.md#storing-boards
+            // @fixme Any error here will crash the server! That should not happen.
             if (err != error.WouldBlock) return err;
         }
 
-        var maybe_client = server.getCompletion() catch |err| switch (err) {
+        var client = server.getCompletion() catch |err| switch (err) {
             error.WouldBlock, error.Eof => continue,
             else => return err,
-        };
+        } orelse continue;
 
-        if (maybe_client) |client| {
-            switch (client.state) {
-                .reading => {
-                    var fbs = std.io.fixedBufferStream(&client.buffer);
-                    client.response = Response.writer(fbs.writer());
+        switch (client.state) {
+            .reading => {
+                var fbs = std.io.fixedBufferStream(&client.buffer);
+                client.response = Response.writer(fbs.writer());
 
-                    client.request = Request{ .data = client.buffer[0..client.len] };
-                    handleIncomingRequest(client, args.board_dir) catch |err| {
-                        log.debug("Error handling incoming message: {}\n", .{err});
-                        const status: Response.ResponseStatus = switch (err) {
-                            Request.GeneralError.ParseError => .bad_request,
-                            else => .internal_server_error,
-                        };
-
-                        client.response.writeStatus(status) catch {};
+                client.request = Request{ .data = client.buffer[0..client.len] };
+                handleIncomingRequest(client, args.board_dir) catch |err| {
+                    log.debug("Error handling incoming message: {}\n", .{err});
+                    const status: Response.ResponseStatus = switch (err) {
+                        Request.GeneralError.ParseError => .bad_request,
+                        else => .internal_server_error,
                     };
 
-                    client.response.complete() catch {};
-                    client.len = fbs.pos;
-                    client.send() catch {};
-                },
-                .writing => client.deinit(),
-                .idle => {
-                    std.log.err("Got idle client from getCompletion(), which probably shouldn't ever happen. Nothing to do right now...", .{});
-                }
+                    client.response.writeStatus(status) catch {};
+                };
+
+                client.response.complete() catch {};
+                client.len = fbs.pos;
+                client.send() catch {};
+            },
+            .writing => client.deinit(),
+            .idle => {
+                std.log.err("Got idle client from getCompletion(), which probably shouldn't ever happen. Nothing to do right now...", .{});
             }
         }
     }
@@ -100,6 +101,7 @@ fn handleIncomingRequest(client: *Client, board_directory: []const u8) !void {
         },
         .put => return try handlePutBoard(client, path, board_directory),
         .options => {
+            // @todo Should these headers be added to every request?
             try client.response.writeStatus(.no_content);
             try client.response.writeHeader("Access-Control-Allow-Methods", "GET, OPTIONS, PUT");
             try client.response.writeHeader("Access-Control-Allow-Origin", "*");
