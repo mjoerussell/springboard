@@ -56,29 +56,32 @@ pub fn run(args: Args.ServerArgs) !void {
         };
 
         if (maybe_client) |client| {
-            if (client.is_reading) {
-                var fbs = std.io.fixedBufferStream(&client.buffer);
-                client.response = Response.writer(fbs.writer());
+            switch (client.state) {
+                .reading => {
+                    var fbs = std.io.fixedBufferStream(&client.buffer);
+                    client.response = Response.writer(fbs.writer());
 
-                client.request = Request{ .data = client.buffer[0..client.len] };
-                handleIncomingRequest(client, args.board_dir) catch |err| {
-                    log.debug("Error handling incoming message: {}\n", .{err});
-                    const status: Response.ResponseStatus = switch (err) {
-                        Request.GeneralError.ParseError => .bad_request,
-                        else => .internal_server_error,
+                    client.request = Request{ .data = client.buffer[0..client.len] };
+                    handleIncomingRequest(client, args.board_dir) catch |err| {
+                        log.debug("Error handling incoming message: {}\n", .{err});
+                        const status: Response.ResponseStatus = switch (err) {
+                            Request.GeneralError.ParseError => .bad_request,
+                            else => .internal_server_error,
+                        };
+
+                        client.response.writeStatus(status) catch {};
                     };
 
-                    client.response.writeStatus(status) catch {};
-                };
-
-                client.response.complete() catch {};
-                client.len = fbs.pos;
-                client.send() catch {};
-            } else {
-                client.deinit();
+                    client.response.complete() catch {};
+                    client.len = fbs.pos;
+                    client.send() catch {};
+                },
+                .writing => client.deinit(),
+                .idle => {
+                    std.log.err("Got idle client from getCompletion(), which probably shouldn't ever happen. Nothing to do right now...", .{});
+                }
             }
         }
-        
     }
 }
 

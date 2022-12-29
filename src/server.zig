@@ -23,13 +23,19 @@ pub const Client = switch (builtin.os.tag) {
     else => @compileError("Platform not supported"),
 };
 
+pub const ClientState = enum {
+    idle,
+    reading,
+    writing,
+};
+
 pub const WindowsClient = struct {
     socket: os.socket_t,
-    buffer: [4096]u8 = undefined,
-    len: usize = 0,
     request: Request,
     response: Response.FixedBufferWriter,
-    is_reading: bool = true,
+    buffer: [4096]u8 = undefined,
+    len: usize = 0,
+    state: ClientState = .idle,
   
     overlapped: windows.OVERLAPPED = .{
         .Internal = 0,
@@ -57,10 +63,12 @@ pub const WindowsClient = struct {
             },
             else => unreachable,
         }
+
+        client.state = .idle;
     }
 
     pub fn recv(client: *WindowsClient) !void {
-        client.is_reading = true;
+        client.state = .reading;
 
         winsock.wsaRecv(client.socket, &client.buffer, &client.overlapped) catch |err| switch (err) {
             error.IoPending => return,
@@ -69,7 +77,7 @@ pub const WindowsClient = struct {
     }
 
     pub fn send(client: *WindowsClient) !void {
-        client.is_reading = false;
+        client.state = .writing;
 
         winsock.wsaSend(client.socket, client.buffer[0..client.len], &client.overlapped) catch |err| switch (err) {
             error.IoPending => return,
@@ -80,7 +88,7 @@ pub const WindowsClient = struct {
 
 const WindowsServer = struct {
     socket: os.socket_t = undefined,
-    clients: [128]WindowsClient = undefined,
+    clients: [2]WindowsClient = undefined,
     client_count: usize = 0,
     listen_address: net.Address = undefined,
     io_port: os.windows.HANDLE,
@@ -89,6 +97,15 @@ const WindowsServer = struct {
         var server = WindowsServer{
             .io_port = try windows.CreateIoCompletionPort(windows.INVALID_HANDLE_VALUE, null, undefined, undefined),
         };
+
+        // Init all clients to a mostly empty, but usable, state
+        for (server.clients) |*client| {
+            client.* = WindowsClient{
+                .socket = undefined,
+                .request = undefined,
+                .response = undefined,
+            };
+        }
 
         const flags = os.windows.ws2_32.WSA_FLAG_OVERLAPPED | os.windows.ws2_32.WSA_FLAG_NO_HANDLE_INHERIT;
         const socket = try os.windows.WSASocketW(@intCast(i32, address.any.family), @as(i32, os.SOCK.STREAM), @as(i32, os.IPPROTO.TCP), null, 0, flags);
@@ -128,14 +145,16 @@ const WindowsServer = struct {
                 else => return error.ConnectError,
             };
         } else {
-            _ = try windows.CreateIoCompletionPort(client_sock, server.io_port, undefined, 0);
-            server.clients[server.client_count] = WindowsClient{ 
-                .socket = client_sock,
-                .request = undefined,
-                .response = undefined,  
-            };
-            defer server.client_count += 1;
-            return &server.clients[server.client_count];
+            if (server.findIdleClient()) |client| {
+                _ = try windows.CreateIoCompletionPort(client_sock, server.io_port, undefined, 0);
+                client.* = WindowsClient{ 
+                    .socket = client_sock,
+                    .request = undefined,
+                    .response = undefined,  
+                };
+                return client;
+            }
+            return error.Busy;
         }
     }
 
@@ -150,6 +169,13 @@ const WindowsServer = struct {
             return client;
         }
 
+        return null;
+    }
+
+    fn findIdleClient(server: *WindowsServer) ?*Client {
+        for (server.clients[0..]) |*client| {
+            if (client.state == .idle) return client;
+        }
         return null;
     }
 
