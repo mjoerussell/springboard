@@ -51,7 +51,7 @@ pub fn run(args: Args.ServerArgs) !void {
         }
 
         var client = server.getCompletion() catch |err| switch (err) {
-            error.WouldBlock, error.Eof => continue,
+            error.WouldBlock => continue,
             else => return err,
         } orelse continue;
 

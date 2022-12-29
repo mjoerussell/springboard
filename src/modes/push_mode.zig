@@ -38,7 +38,9 @@ pub fn run(in_allocator: Allocator, push_args: Args.PushArgs) !void {
 
     var signature = try key_pair.sign(board_content, null);
 
-    _ = try std.os.windows.WSAStartup(2, 2);
+    if (comptime @import("builtin").os.tag == .windows) {
+        _ = try std.os.windows.WSAStartup(2, 2);
+    }
     var server_connection = try net.tcpConnectToHost(allocator, push_args.server, push_args.port);
     defer server_connection.close();
 
