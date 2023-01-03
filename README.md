@@ -12,6 +12,8 @@ Spring83 is a client/server protocol. Springboard, in its current form, is an im
 
 In addition to a server implementation, Springboard comes with a few helpful tools for working with Spring83 boards.
 
+Springboard is currently running at `springboard.blog`.
+
 ## Installation
 
 Springboard is built with the Zig programming language, and requires a Zig compiler from [master](https://github.com/ziglang/zig) to be built. Springboard can be built with one simple command:
