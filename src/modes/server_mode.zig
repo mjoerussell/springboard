@@ -87,6 +87,8 @@ fn handleIncomingRequest(client: *Client, board_directory: []const u8) !void {
     const method = try client.request.getMethod();
     const path = try client.request.getPath();
 
+    std.log.debug("Incoming request for {s}", .{path});
+
     switch (method) {
         .get => {
             if (std.mem.eql(u8, path, "/")) {
@@ -133,6 +135,18 @@ fn handleGetBoard(client: *Client, path: []const u8, board_directory: []const u8
 
     if (std.mem.eql(u8, public_key, test_public_key_hex)) {
         return try createAndSendTestBoard(client);
+    }
+
+    // Make sure that the key hasn't been added to the denylist.
+    const key_is_denied = denylistContainsKey("denylist.txt", public_key) catch |err| switch (err) {
+        error.FileNotFound => false,
+        else => return err,
+    };
+    if (key_is_denied) {
+        log.warn("Key belongs to denylist, board retrieval is forbidden", .{});
+        // Purposely do not distinguish between a board that does not exist vs. one that has been blocked
+        try client.response.writeStatus(.not_found);
+        return;
     }
 
     const cwd = std.fs.cwd();
@@ -232,7 +246,11 @@ fn handlePutBoard(client: *Client, path: []const u8, board_directory: []const u8
     };
 
     // Make sure that the key hasn't been added to the denylist.
-    if (try denylistContainsKey("denylist.txt", public_key)) {
+    const key_is_denied = denylistContainsKey("denylist.txt", public_key) catch |err| switch (err) {
+        error.FileNotFound => false,
+        else => return err,
+    };
+    if (key_is_denied) {
         log.warn("Key belongs to denylist, board upload is forbidden", .{});
         try client.response.writeStatus(.forbidden);
         return;
@@ -309,7 +327,12 @@ fn getPublicKeyFromUri(uri: []const u8) !Ed25519.PublicKey {
 fn denylistContainsKey(denylist_filename: []const u8, public_key: []const u8) !bool {
     // Check the denylist to see if this key is on it.
     const cwd = std.fs.cwd();
-    var denylist_file = try cwd.openFile(denylist_filename, .{});
+    var denylist_file = cwd.openFile(denylist_filename, .{}) catch |err| {
+        if (err == error.FileNotFound) {
+            std.log.err("Expected denylist but it was not found: please create one at {s}", .{denylist_filename});
+        }
+        return err;
+    };
     defer denylist_file.close();
 
     var denylist_buf: [65]u8 = undefined;
