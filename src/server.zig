@@ -155,10 +155,10 @@ const WindowsServer = struct {
         var completion_key: usize = undefined;
         var overlapped: ?*windows.OVERLAPPED = undefined;
 
-        var bytes_transferred = winsock.getQueuedCompletionStatus(server.io_port, &completion_key, &overlapped, false);
+        var bytes_transferred = try winsock.getQueuedCompletionStatus(server.io_port, &completion_key, &overlapped, false);
         if (overlapped) |o| {
             var client = @fieldParentPtr(Client, "overlapped", o);
-            client.len = bytes_transferred;
+            client.len = @intCast(usize, bytes_transferred);
             return client;
         }
 
