@@ -12,7 +12,7 @@ Spring83 is a client/server protocol. Springboard, in its current form, is an im
 
 In addition to a server implementation, Springboard comes with a few helpful tools for working with Spring83 boards.
 
-Springboard is currently running at `springboard.blog`.
+Springboard is currently running at [springboard.blog](springboard.blog).
 
 ## Installation
 
