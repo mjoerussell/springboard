@@ -184,6 +184,7 @@ const LinuxClient = struct {
     io_uring: *std.os.linux.IO_Uring,
 
     pub fn deinit(client: *LinuxClient) void {
+        client.state = .idle;
         std.os.closeSocket(client.socket);
     }
 
