@@ -22,10 +22,6 @@ const test_public_key_hex = "ab589f4dde9fce4180fcf42c7b05185b0a02a5d682e353fa391
 const test_secret_key = KeyPair.secretKeyFromHexString("3371f8b011f51632fea33ed0a3688c26a45498205c6097c352bd4d079d224419" ++ test_public_key_hex) catch unreachable;
 
 pub fn run(args: Args.ServerArgs) !void {
-    var localhost = try std.net.Address.parseIp("0.0.0.0", args.port);
-
-    var server = try Server.init(localhost);
-
     const cwd = std.fs.cwd();
     cwd.makeDir(args.board_dir) catch |err| switch (err) {
         error.PathAlreadyExists => {
@@ -38,47 +34,81 @@ pub fn run(args: Args.ServerArgs) !void {
     };
 
     log.info("Boards will be stored at path \"{s}\"", .{args.board_dir});
+
+    var localhost = try std.net.Address.parseIp("0.0.0.0", args.port);
+    var server = try Server.init(localhost);
+    server.accept() catch {};
+
     log.info("Listening on port {}", .{args.port});
 
+    var clients: [16]*Client = undefined;
+
     while (true) {
-        if (server.accept()) |client| {
-            try client.recv();
-        } else |err| {
-            // @fixme We should handle error.Busy more gracefully. The spec suggests that we return status code 429
-            //        https://github.com/robinsloan/spring-83/blob/main/draft-20220629.md#storing-boards
-            // @fixme Any error here will crash the server! That should not happen.
-            if (err != error.WouldBlock) return err;
-        }
-
-        var client = server.getCompletion() catch |err| switch (err) {
-            error.WouldBlock => continue,
+        const client_count = server.getCompletions(&clients) catch |err| switch (err) {
+            error.WouldBlock => {
+                log.debug("No completion available", .{});
+                continue;
+            },
             else => return err,
-        } orelse continue;
+        };
+        if (client_count == 0) continue;
 
-        switch (client.state) {
-            .reading => {
-                var fbs = std.io.fixedBufferStream(&client.buffer);
-                client.response = Response.writer(fbs.writer());
+        std.log.debug("Got {} ready clients", .{client_count});
+        for (clients[0..client_count]) |client| {
+            log.debug("Processing client {*} ({})", .{ client, client.state });
+            switch (client.state) {
+                .accepting => {
+                    client.start_ts = std.time.microTimestamp();
+                    client.recv() catch |err| {
+                        log.err("Encountered error during recv(): {}", .{err});
+                        client.deinit();
+                    };
+                    // server.accept() catch |err| {
+                    //     log.err("Error creating accept event: {}", .{err});
+                    // };
+                },
+                .reading => {
+                    var fbs = std.io.fixedBufferStream(&client.buffer);
+                    client.response = Response.writer(fbs.writer());
 
-                client.request = Request{ .data = client.buffer[0..client.len] };
-                handleIncomingRequest(client, args.board_dir) catch |err| {
-                    log.debug("Error handling incoming message: {}\n", .{err});
-                    const status: Response.ResponseStatus = switch (err) {
-                        Request.GeneralError.ParseError => .bad_request,
-                        else => .internal_server_error,
+                    client.request = Request{ .data = client.buffer[0..client.len] };
+                    handleIncomingRequest(client, args.board_dir) catch |err| {
+                        log.debug("Error handling incoming message: {}\n", .{err});
+                        const status: Response.ResponseStatus = switch (err) {
+                            Request.GeneralError.ParseError => .bad_request,
+                            else => .internal_server_error,
+                        };
+
+                        client.response.writeStatus(status) catch {};
                     };
 
-                    client.response.writeStatus(status) catch {};
-                };
+                    client.response.complete() catch {};
+                    client.len = fbs.pos;
 
-                client.response.complete() catch {};
-                client.len = fbs.pos;
-                client.send() catch {};
-            },
-            .writing => client.deinit(),
-            .idle => {
-                std.log.err("Got idle client from getCompletion(), which probably shouldn't ever happen. Nothing to do right now...", .{});
-            },
+                    std.log.debug("Request handling completed, sending response", .{});
+                    client.send() catch |err| {
+                        std.log.err("Encountered error during send(): {}", .{err});
+                        client.deinit();
+                    };
+                    std.log.debug("Wrote {} bytes in response", .{client.len});
+                },
+                .writing => {
+                    std.log.debug("Closing client", .{});
+                    client.deinit();
+                    // server.reuseClient(client) catch |err| {
+                    //     std.log.err("Error while trying to close and reuse client ({*}): {}", .{ client, err });
+                    //     server.accept() catch {};
+                    // };
+                },
+                .disconnecting => {
+                    server.acceptClient(client) catch |err| {
+                        log.err("Error accepting new client: {}", .{err});
+                    };
+                },
+                .idle => {
+                    std.log.err("Got idle client from getCompletion(), which probably shouldn't ever happen. Nothing to do right now...", .{});
+                },
+            }
         }
     }
 }
@@ -119,11 +149,15 @@ fn handleGetIndex(client: *Client) !void {
     var index_file = try cwd.openFile("static/index.html", .{});
     defer index_file.close();
 
+    std.log.debug("Beginning to write response", .{});
+
     try client.response.writeStatus(.ok);
     try client.response.writeHeader("Content-Type", "text/html");
 
     var index_buffer: [2048]u8 = undefined;
     const index_len = try index_file.readAll(&index_buffer);
+
+    std.log.debug("Writing response body", .{});
     try client.response.writeBody(index_buffer[0..index_len]);
 }
 
