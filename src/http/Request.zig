@@ -73,7 +73,7 @@ pub fn getMethod(request: Request) GeneralError!HttpMethod {
 }
 
 pub fn getPath(request: Request) GeneralError![]const u8 {
-    for (request.data) |c, index| {
+    for (request.data, 0..) |c, index| {
         if (c == ' ') {
             const path_end_index = std.mem.indexOfPos(u8, request.data, index + 1, " ") orelse return error.ParseError;
             return request.data[index + 1 .. path_end_index];

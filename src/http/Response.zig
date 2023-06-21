@@ -172,7 +172,7 @@ pub fn Writer(comptime W: type) type {
 data: []const u8,
 
 pub fn getStatus(response: Response) !ResponseStatus {
-    for (response.data) |c, index| {
+    for (response.data, 0..) |c, index| {
         if (c == ' ') {
             const status_end_index = std.mem.indexOfPos(u8, response.data, index + 1, " ") orelse return error.InvalidStatus;
             const status_val = std.fmt.parseInt(u32, response.data[index + 1 .. status_end_index], 10) catch return error.InvalidStatus;

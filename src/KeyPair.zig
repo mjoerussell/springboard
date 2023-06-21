@@ -81,7 +81,7 @@ pub fn generate(comptime thread_count: usize) !Ed25519.KeyPair {
     std.log.debug("It is currently {}/{}", .{ context.now.month, context.now.year });
 
     var threads: [thread_count]Thread = undefined;
-    for (threads) |*thread| {
+    for (&threads) |*thread| {
         thread.* = try Thread.spawn(.{}, generateValidKeyPairThreaded, .{&context});
     }
 
