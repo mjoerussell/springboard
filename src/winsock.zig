@@ -72,8 +72,6 @@ pub fn wsaRecv(socket: os.socket_t, buffer: []u8, overlapped: *windows.OVERLAPPE
 }
 
 pub fn wsaSend(socket: os.socket_t, buffer: []const u8, overlapped: *windows.OVERLAPPED) SendError!void {
-    log.debug("Buffer: {*}", .{buffer.ptr});
-
     var wsa_buf = [_]windows.ws2_32.WSABUF{
         .{
             .buf = @intToPtr([*]u8, @ptrToInt(buffer.ptr)),
@@ -83,7 +81,6 @@ pub fn wsaSend(socket: os.socket_t, buffer: []const u8, overlapped: *windows.OVE
 
     var bytes_sent: u32 = 0;
     var flags: u32 = 0;
-    log.debug("socket = {*}, overlapped = {*}", .{ socket, overlapped });
     var result = windows.ws2_32.WSASend(socket, @ptrCast([*]windows.ws2_32.WSABUF, &wsa_buf), 1, &bytes_sent, flags, overlapped, null);
 
     if (result != os.windows.ws2_32.SOCKET_ERROR) return;

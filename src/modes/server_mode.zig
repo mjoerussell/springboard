@@ -37,7 +37,6 @@ pub fn run(args: Args.ServerArgs) !void {
 
     var localhost = try std.net.Address.parseIp("0.0.0.0", args.port);
     var server = try Server.init(localhost);
-    server.accept() catch {};
 
     log.info("Listening on port {}", .{args.port});
 
@@ -51,21 +50,15 @@ pub fn run(args: Args.ServerArgs) !void {
             },
             else => return err,
         };
-        if (client_count == 0) continue;
 
-        std.log.debug("Got {} ready clients", .{client_count});
         for (clients[0..client_count]) |client| {
-            log.debug("Processing client {*} ({})", .{ client, client.state });
             switch (client.state) {
                 .accepting => {
                     client.start_ts = std.time.microTimestamp();
-                    client.recv() catch |err| {
+                    server.recv(client) catch |err| {
                         log.err("Encountered error during recv(): {}", .{err});
-                        client.deinit();
+                        server.deinitClient(client);
                     };
-                    // server.accept() catch |err| {
-                    //     log.err("Error creating accept event: {}", .{err});
-                    // };
                 },
                 .reading => {
                     var fbs = std.io.fixedBufferStream(&client.buffer);
@@ -85,20 +78,13 @@ pub fn run(args: Args.ServerArgs) !void {
                     client.response.complete() catch {};
                     client.len = fbs.pos;
 
-                    std.log.debug("Request handling completed, sending response", .{});
-                    client.send() catch |err| {
+                    server.send(client) catch |err| {
                         std.log.err("Encountered error during send(): {}", .{err});
-                        client.deinit();
+                        server.deinitClient(client);
                     };
-                    std.log.debug("Wrote {} bytes in response", .{client.len});
                 },
                 .writing => {
-                    std.log.debug("Closing client", .{});
-                    client.deinit();
-                    // server.reuseClient(client) catch |err| {
-                    //     std.log.err("Error while trying to close and reuse client ({*}): {}", .{ client, err });
-                    //     server.accept() catch {};
-                    // };
+                    server.deinitClient(client);
                 },
                 .disconnecting => {
                     server.acceptClient(client) catch |err| {
@@ -117,7 +103,7 @@ fn handleIncomingRequest(client: *Client, board_directory: []const u8) !void {
     const method = try client.request.getMethod();
     const path = try client.request.getPath();
 
-    std.log.debug("Incoming request for {s}", .{path});
+    // std.log.debug("Incoming request for {s}", .{path});
 
     switch (method) {
         .get => {
@@ -149,7 +135,7 @@ fn handleGetIndex(client: *Client) !void {
     var index_file = try cwd.openFile("static/index.html", .{});
     defer index_file.close();
 
-    std.log.debug("Beginning to write response", .{});
+    // std.log.debug("Beginning to write response", .{});
 
     try client.response.writeStatus(.ok);
     try client.response.writeHeader("Content-Type", "text/html");
@@ -157,7 +143,7 @@ fn handleGetIndex(client: *Client) !void {
     var index_buffer: [2048]u8 = undefined;
     const index_len = try index_file.readAll(&index_buffer);
 
-    std.log.debug("Writing response body", .{});
+    // std.log.debug("Writing response body", .{});
     try client.response.writeBody(index_buffer[0..index_len]);
 }
 

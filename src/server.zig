@@ -55,17 +55,9 @@ pub const WindowsClient = struct {
         .hEvent = null,
     },
 
-    // fn reset(client: *WindowsClient, new_socket: ?os.socket_t) void {
     fn zero(client: *WindowsClient) void {
         // 0-init read/write buffer
-        for (client.buffer) |*b| b.* = 0;
-        // if (new_socket) |socket| {
-        //     client.socket = socket;
-        //     client.state = .accepting;
-        // } else {
-        //     // client.socket = undefined;
-        //     client.state = .idle;
-        // }
+        for (&client.buffer) |*b| b.* = 0;
         client.len = 0;
         client.state = .idle;
         client.request = undefined;
@@ -80,52 +72,6 @@ pub const WindowsClient = struct {
                 },
             },
             .hEvent = null,
-        };
-    }
-
-    pub fn deinit(client: *WindowsClient) void {
-        // os.closeSocket(client.socket);
-        winsock.disconnectEx(client.socket, &client.overlapped, true) catch |err| {
-            switch (err) {
-                error.IoPending => {
-                    // Disconnect in progress, socket can be reused after it's completed
-                    client.state = .disconnecting;
-                },
-                else => {
-                    log.err("Error disconnecting client: {}", .{err});
-
-                    // Since we couldn't gracefully disconnect the client, we'll shut down its socket and re-create
-                    // it.
-                    os.closeSocket(client.socket);
-                    client.zero();
-                },
-            }
-
-            const end_ts = std.time.microTimestamp();
-            const duration = @intToFloat(f64, end_ts - client.start_ts) / std.time.us_per_ms;
-            std.log.info("Request completed in {d:4}ms", .{duration});
-            return;
-        };
-        // client.state = .idle;
-    }
-
-    pub fn recv(client: *WindowsClient) !void {
-        client.state = .reading;
-
-        winsock.wsaRecv(client.socket, &client.buffer, &client.overlapped) catch |err| switch (err) {
-            error.IoPending => return,
-            else => return err,
-        };
-    }
-
-    pub fn send(client: *WindowsClient) !void {
-        client.state = .writing;
-
-        log.debug("Client: {*}", .{client});
-        log.debug("Writing {} bytes from buffer at {*}", .{ client.len, &client.buffer });
-        winsock.wsaSend(client.socket, client.buffer[0..client.len], &client.overlapped) catch |err| switch (err) {
-            error.IoPending => return,
-            else => return err,
         };
     }
 };
@@ -163,15 +109,8 @@ const WindowsServer = struct {
         _ = try os.windows.CreateIoCompletionPort(socket, server.io_port, undefined, 0);
 
         // Init all clients to a mostly empty, but usable, state
-        for (server.clients) |*client| {
-            // client.zero();
+        for (&server.clients) |*client| {
             client.socket = try server.getSocket();
-            // client.* = WindowsClient{
-            //     // .socket = try server.getSocket(),
-            //     .socket = undefined,
-            //     .request = undefined,
-            //     .response = undefined,
-            // };
             _ = try windows.CreateIoCompletionPort(client.socket, server.io_port, undefined, 0);
             try server.acceptClient(client);
         }
@@ -185,33 +124,61 @@ const WindowsServer = struct {
         server.listen_address = undefined;
     }
 
-    pub fn accept(server: *WindowsServer) !void {
-        var client = server.findIdleClient() orelse return error.Busy;
-        // client.* = .{
-        //     .socket = try server.getSocket(),
-        //     .state = .accepting,
-        //     .request = undefined,
-        //     .response = undefined,
-        // };
-        try server.acceptClient(client);
+    pub fn deinitClient(server: *WindowsServer, client: *WindowsClient) void {
+        _ = server;
+        winsock.disconnectEx(client.socket, &client.overlapped, true) catch |err| {
+            switch (err) {
+                error.IoPending => {
+                    // Disconnect in progress, socket can be reused after it's completed
+                    client.state = .disconnecting;
+                },
+                else => {
+                    log.err("Error disconnecting client: {}", .{err});
+
+                    // Since we couldn't gracefully disconnect the client, we'll shut down its socket and re-create
+                    // it.
+                    os.closeSocket(client.socket);
+                    client.zero();
+                },
+            }
+
+            const end_ts = std.time.microTimestamp();
+            const duration = @intToFloat(f64, end_ts - client.start_ts) / std.time.us_per_ms;
+            std.log.info("Request completed in {d:4}ms", .{duration});
+            return;
+        };
     }
 
-    pub fn reuseClient(server: *WindowsServer, client: *WindowsClient) !void {
-        client.deinit();
-        try server.acceptClient(client);
+    pub fn recv(server: *WindowsServer, client: *WindowsClient) !void {
+        _ = server;
+        client.state = .reading;
+
+        winsock.wsaRecv(client.socket, &client.buffer, &client.overlapped) catch |err| switch (err) {
+            error.IoPending => return,
+            else => return err,
+        };
+    }
+
+    pub fn send(server: *WindowsServer, client: *WindowsClient) !void {
+        _ = server;
+        client.state = .writing;
+
+        winsock.wsaSend(client.socket, client.buffer[0..client.len], &client.overlapped) catch |err| switch (err) {
+            error.IoPending => return,
+            else => return err,
+        };
     }
 
     pub fn acceptClient(server: *WindowsServer, client: *WindowsClient) !void {
-        // client.reset(null);
         client.zero();
-        errdefer client.deinit();
         client.state = .accepting;
 
-        // _ = try windows.CreateIoCompletionPort(client.socket, server.io_port, undefined, 0);
         winsock.acceptEx(server.socket, client.socket, &client.buffer, &client.len, &client.overlapped) catch |err| switch (err) {
-            error.IoPending => log.debug("Accept successfully posted and pending completion", .{}),
-            error.ConnectionReset => log.debug("Peer terminated connection before accept could complete", .{}),
-            else => log.warn("Error occurred during acceptEx(): {}", .{err}),
+            error.IoPending, error.ConnectionReset => {},
+            else => {
+                log.warn("Error occurred during acceptEx(): {}", .{err});
+                return err;
+            },
         };
     }
 
@@ -234,16 +201,7 @@ const WindowsServer = struct {
         return client_count;
     }
 
-    fn findIdleClient(server: *WindowsServer) ?*Client {
-        for (server.clients[0..]) |*client| {
-            // std.log.debug("Client state: {}", .{client.state});
-            if (client.state == .idle) return client;
-        }
-        return null;
-    }
-
     fn getSocket(server: WindowsServer) !os.socket_t {
-        // const flags = os.windows.ws2_32.WSA_FLAG_OVERLAPPED | os.windows.ws2_32.WSA_FLAG_NO_HANDLE_INHERIT;
         const flags = os.windows.ws2_32.WSA_FLAG_OVERLAPPED;
         return try os.windows.WSASocketW(@intCast(i32, server.listen_address.any.family), @as(i32, os.SOCK.STREAM), @as(i32, os.IPPROTO.TCP), null, 0, flags);
     }
@@ -251,39 +209,22 @@ const WindowsServer = struct {
 
 const LinuxClient = struct {
     socket: os.socket_t,
-    address: os.sockaddr = undefined,
-    address_len: os.socklen_t = @sizeOf(std.net.Address),
     request: Request,
     response: Response.FixedBufferWriter,
+
+    address: os.sockaddr = undefined,
+    address_len: os.socklen_t = @sizeOf(std.net.Address),
     buffer: [4096]u8 = undefined,
     len: usize = 0,
     start_ts: i64 = 0,
     state: ClientState = .idle,
 
-    io_uring: *std.os.linux.IO_Uring,
-
-    pub fn deinit(client: *LinuxClient) void {
-        client.state = .idle;
-        std.os.closeSocket(client.socket);
-        const end_ts = std.time.microTimestamp();
-        const duration = end_ts - client.start_ts;
-        std.log.info("Request completed in {}us", .{duration});
-    }
-
-    pub fn recv(client: *LinuxClient) !void {
-        client.state = .reading;
-
-        const flags = std.os.linux.IOSQE_ASYNC;
-        _ = try client.io_uring.recv(@intCast(u64, @ptrToInt(client)), client.socket, .{ .buffer = &client.buffer }, flags);
-        _ = try client.io_uring.submit();
-    }
-
-    pub fn send(client: *LinuxClient) !void {
-        client.state = .writing;
-
-        const flags = std.os.linux.IOSQE_ASYNC;
-        _ = try client.io_uring.send(@intCast(u64, @ptrToInt(client)), client.socket, client.buffer[0..client.len], flags);
-        _ = try client.io_uring.submit();
+    fn zero(client: *LinuxClient) void {
+        client.* = .{
+            .socket = undefined,
+            .request = undefined,
+            .response = undefined,
+        };
     }
 };
 
@@ -297,9 +238,11 @@ const LinuxServer = struct {
     pub fn init(address: net.Address) !LinuxServer {
         var server: LinuxServer = undefined;
 
+        const flags = 0;
         var entries: u16 = 4096;
         server.io_uring = while (entries > 1) {
-            if (std.os.linux.IO_Uring.init(@intCast(u13, entries), 0)) |ring| {
+            if (std.os.linux.IO_Uring.init(@intCast(u13, entries), flags)) |ring| {
+                log.info("Submission queue created with {} entries", .{entries});
                 break ring;
             } else |err| switch (err) {
                 error.SystemResources => {
@@ -310,25 +253,25 @@ const LinuxServer = struct {
             }
         };
 
-        for (server.clients) |*client| {
-            client.* = LinuxClient{
-                .socket = undefined,
-                .io_uring = undefined,
-                .request = undefined,
-                .response = undefined,
-            };
-        }
-
         server.listen_address = address;
 
-        const socket_flags = std.os.SOCK.STREAM | std.os.SOCK.NONBLOCK;
-        server.socket = try std.os.socket(address.any.family, socket_flags, std.os.IPPROTO.TCP);
+        const socket_flags = os.SOCK.STREAM;
+        server.socket = try os.socket(address.any.family, socket_flags, os.IPPROTO.TCP);
         errdefer os.closeSocket(server.socket);
+
+        var enable: u32 = 1;
+        try std.os.setsockopt(server.socket, os.SOL.SOCKET, os.SO.REUSEADDR, std.mem.asBytes(&enable));
 
         var socklen = address.getOsSockLen();
         try os.bind(server.socket, &address.any, socklen);
         try os.listen(server.socket, 128);
         try os.getsockname(server.socket, &server.listen_address.any, &socklen);
+
+        for (&server.clients) |*client| {
+            try server.acceptClient(client);
+        }
+
+        _ = try server.io_uring.submit();
 
         return server;
     }
@@ -339,31 +282,66 @@ const LinuxServer = struct {
         server.listen_address = undefined;
     }
 
-    pub fn accept(server: *LinuxServer) !void {
-        var client = server.findIdleClient() orelse return error.Busy;
-        client.* = LinuxClient{
-            .io_uring = &server.io_uring,
-            .state = .accepting,
-            .socket = undefined,
-            .request = undefined,
-            .response = undefined,
+    pub fn deinitClient(server: *LinuxServer, client: *LinuxClient) void {
+        client.state = .disconnecting;
+        _ = server.io_uring.close(@intCast(u64, @ptrToInt(client)), client.socket) catch |err| {
+            std.log.err("Error submiting SQE for close(): {}", .{err});
+            return;
         };
+        _ = server.io_uring.submit() catch |err| {
+            log.err("Error while trying to close client: {}", .{err});
+        };
+        const end_ts = std.time.microTimestamp();
+        const duration = end_ts - client.start_ts;
+        log.info("Request completed in {}ms", .{@divFloor(duration, std.time.us_per_ms)});
+    }
 
-        _ = try server.io_uring.accept(@intCast(u64, @ptrToInt(client)), server.socket, &client.address, &client.address_len, 0);
-        _ = try server.io_uring.submit();
+    pub fn recv(server: *LinuxServer, client: *LinuxClient) !void {
+        client.state = .reading;
+
+        const flags = 0;
+
+        _ = try server.io_uring.recv(@intCast(u64, @ptrToInt(client)), client.socket, .{ .buffer = &client.buffer }, flags);
+    }
+
+    pub fn send(server: *LinuxServer, client: *LinuxClient) !void {
+        client.state = .writing;
+
+        const flags = 0;
+
+        _ = try server.io_uring.send(@intCast(u64, @ptrToInt(client)), client.socket, client.buffer[0..client.len], flags);
+    }
+
+    pub fn acceptClient(server: *LinuxServer, client: *LinuxClient) !void {
+        client.zero();
+        client.state = .accepting;
+        const flags = os.SOCK.CLOEXEC | os.SOCK.NONBLOCK;
+
+        _ = server.io_uring.accept(@intCast(u64, @ptrToInt(client)), server.socket, null, null, flags) catch |err| {
+            log.err("Error while trying to accept client: {}", .{err});
+            return err;
+        };
     }
 
     pub fn getCompletions(server: *LinuxServer, clients: []*Client) !usize {
         var client_count: usize = 0;
 
+        _ = server.io_uring.submit() catch |err| {
+            log.err("Error submitting SQEs: {}", .{err});
+            return err;
+        };
+
         // @todo Even though the user is giving us a slice of clients to fetch, we're still capping the max at 16
         var cqes: [16]std.os.linux.io_uring_cqe = undefined;
-        const count = try server.io_uring.copy_cqes(&cqes, 16);
+        const count = server.io_uring.copy_cqes(&cqes, 1) catch |err| {
+            log.err("Error while copying CQEs: {}", .{err});
+            return err;
+        };
         if (count == 0) return error.WouldBlock;
         for (cqes[0..count]) |cqe| {
+            var client = @intToPtr(?*LinuxClient, @intCast(usize, cqe.user_data)) orelse continue;
             switch (cqe.err()) {
                 .SUCCESS => {
-                    var client = @intToPtr(?*LinuxClient, @intCast(usize, cqe.user_data)) orelse continue;
                     if (client.state == .accepting) {
                         client.socket = cqe.res;
                     } else {
@@ -373,27 +351,16 @@ const LinuxServer = struct {
                     client_count += 1;
                 },
                 .AGAIN => {
-                    var client = @intToPtr(?*LinuxClient, @intCast(usize, cqe.user_data));
-                    if (client) |c| {
-                        if (c.state == .accepting) {
-                            c.state = .idle;
-                            try server.accept();
-                        }
+                    if (client.state == .accepting) {
+                        try server.acceptClient(client);
                     }
                 },
                 else => |err| {
-                    std.log.err("getCompletion error: {}", .{err});
+                    log.err("getCompletion error: {} (during state {})", .{ err, client.state });
                 },
             }
         }
 
         return client_count;
-    }
-
-    fn findIdleClient(server: *LinuxServer) ?*Client {
-        for (server.clients[0..]) |*client| {
-            if (client.state == .idle) return client;
-        }
-        return null;
     }
 };
